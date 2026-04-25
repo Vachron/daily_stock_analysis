@@ -1,0 +1,81 @@
+# RSI Overbought/Oversold Strategy / RSI超买超卖
+# Uses RSI indicator to identify overbought (>70) and oversold (<30) conditions for mean-reversion trades.
+
+name: rsi_reversal
+display_name: RSI超买超卖
+description: 基于RSI指标识别超买超卖区域，配合背离与趋势确认，捕捉均值回归交易机会。
+category: reversal
+core_rules: [1, 2, 3]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - get_realtime_quote
+aliases: [RSI, 超买超卖, RSI背离, 均值回归]
+default_priority: 35
+market_regimes: [sideways, trending_down]
+
+instructions: |
+  **RSI超买超卖策略（RSI Overbought/Oversold Strategy）**
+
+  核心原理：RSI（相对强弱指标）衡量价格变动的速度和幅度。
+  当RSI进入极端区域时，价格往往会出现均值回归。
+
+  ## 分析步骤
+
+  ### 1. RSI数值判断
+  使用 `get_daily_history` 获取近 30 日数据，计算 RSI(14)：
+
+  - **超卖区（RSI < 30）**：价格可能过度下跌，存在反弹机会。
+    - RSI < 20：极度超卖，反弹概率极高
+    - RSI 20-30：超卖，关注反弹信号
+  - **中性区（RSI 30-70）**：无极端信号。
+    - RSI 40-60：趋势中性
+    - RSI 从超卖区回升至 30 以上：确认反弹
+  - **超买区（RSI > 70）**：价格可能过度上涨，存在回调风险。
+    - RSI > 80：极度超买，回调概率极高
+    - RSI 70-80：超买，关注回调信号
+
+  ### 2. RSI背离确认（高优先级信号）
+  - **底背离**（买入信号）：股价创新低，RSI 未创新低 → 动量衰竭，看涨
+  - **顶背离**（卖出信号）：股价创新高，RSI 未创新高 → 动量衰竭，看跌
+  - 背离信号比单纯超买超卖更可靠，优先参考
+
+  ### 3. 趋势背景过滤（关联理念2：趋势交易）
+  使用 `analyze_trend` 判断当前趋势：
+  - **上升趋势中 RSI 超卖**：黄金坑，强买入信号，趋势延续概率高
+  - **上升趋势中 RSI 超买**：正常现象，不急于卖出，等顶背离确认
+  - **下降趋势中 RSI 超卖**：弱信号，可能持续超卖，不宜重仓抄底
+  - **下降趋势中 RSI 超买**：反弹卖点，减仓信号
+  - **横盘震荡中 RSI 超卖/超买**：均值回归策略最有效场景
+
+  ### 4. 量能配合验证（关联理念3：效率优先）
+  使用 `get_realtime_quote` 检查：
+  - RSI 超卖 + 缩量企稳 → 信号增强
+  - RSI 超卖 + 放量下跌 → 信号减弱，等待企稳
+  - RSI 超买 + 放量滞涨 → 信号增强
+  - RSI 超买 + 缩量上涨 → 信号减弱
+
+  ### 5. RSI 失败摆动（Failure Swing）确认
+  这是最强的 RSI 反转信号：
+  - **看涨失败摆动**：RSI 跌破 30 后回升至 30 以上，回调不破 30 再次上行
+  - **看跌失败摆动**：RSI 突破 70 后回落至 70 以下，反弹不过 70 再次下行
+
+  ### 6. 乖离率检查（关联理念1：严进策略）
+  - 即使 RSI 超卖，若乖离率 > 5%，仍需等待价格回归均线再入场
+  - RSI 超卖 + 乖离率 < 2%：最佳买入区间
+
+  ### 7. 输出要求
+  - 当前 RSI 数值及所处区域（超卖/中性/超买）
+  - 是否存在 RSI 背离及类型
+  - 是否出现失败摆动信号
+  - 趋势背景下的信号可靠性评估
+  - 建议仓位与止损位
+
+  评分调整建议：
+  - RSI 底背离确认：`sentiment_score +12`
+  - RSI 看涨失败摆动：`sentiment_score +15`
+  - RSI < 20（极度超卖）+ 趋势支撑：`sentiment_score +10`
+  - RSI 顶背离确认：`sentiment_score -12`
+  - RSI 看跌失败摆动：`sentiment_score -15`
+  - RSI > 80（极度超买）+ 趋势压力：`sentiment_score -10`
+  - RSI 在中性区：不调整基础分

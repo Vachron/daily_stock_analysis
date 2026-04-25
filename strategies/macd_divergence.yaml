@@ -1,0 +1,78 @@
+# MACD Divergence Strategy / MACD背离
+# Price makes new highs/lows but MACD fails to confirm — classic reversal signal.
+
+name: macd_divergence
+display_name: MACD背离
+description: 检测MACD顶背离与底背离信号，价格与动量方向不一致时预示趋势反转。
+category: reversal
+core_rules: [1, 2, 5]
+required_tools:
+  - get_daily_history
+  - analyze_trend
+  - get_realtime_quote
+aliases: [MACD背离, 顶背离, 底背离, 背离]
+default_priority: 25
+market_regimes: [trending_up, trending_down]
+
+instructions: |
+  **MACD背离策略（MACD Divergence Strategy）**
+
+  核心原理：当价格创新高/新低但MACD指标未能同步创新高/新低时，
+  说明推动价格运动的动量正在衰竭，趋势反转概率增大。
+
+  ## 分析步骤
+
+  ### 1. 底背离检测（买入信号）
+  使用 `get_daily_history` 获取近 60 日数据，结合 `analyze_trend` 获取 MACD 数据：
+
+  - **价格条件**：股价创出近期新低（近 20 日最低价）。
+  - **MACD条件**：对应时段 MACD 绿柱面积缩小或 DIF 低点抬高。
+  - **确认**：价格第二次探底时 MACD 的 DIF 值高于第一次探底时的 DIF 值。
+  - **强度分级**：
+    - 弱底背离：DIF 低点仅略高于前低（差值 < 10%）
+    - 强底背离：DIF 低点明显高于前低（差值 > 10%），且绿柱面积显著缩小
+
+  ### 2. 顶背离检测（卖出/减仓信号）
+  - **价格条件**：股价创出近期新高（近 20 日最高价）。
+  - **MACD条件**：对应时段 MACD 红柱面积缩小或 DIF 高点降低。
+  - **确认**：价格第二次冲高时 MACD 的 DIF 值低于第一次冲高时的 DIF 值。
+  - **强度分级**：
+    - 弱顶背离：DIF 高点仅略低于前高（差值 < 10%）
+    - 强顶背离：DIF 高点明显低于前高（差值 > 10%），且红柱面积显著缩小
+
+  ### 3. 量能辅助验证（关联理念3：效率优先）
+  使用 `get_realtime_quote` 检查量能：
+  - 底背离时若出现缩量企稳 → 信号增强
+  - 顶背离时若出现放量滞涨 → 信号增强
+  - 背离若无量能配合 → 信号减弱，需更多确认
+
+  ### 4. 趋势背景评估（关联理念2：趋势交易）
+  使用 `analyze_trend` 判断当前趋势：
+  - 上升趋势中的底背离：较强信号，趋势延续概率高
+  - 下降趋势中的底背离：弱信号，可能只是反弹
+  - 上升趋势中的顶背离：较强卖出信号
+  - 下降趋势中的顶背离：趋势加速信号，不宜抄底
+
+  ### 5. 时间周期确认
+  - 日线级别背离：中等信号，持仓 5-15 日
+  - 周线级别背离：强信号，持仓 1-3 个月
+  - 多周期共振（日线+周线同方向背离）：最强信号
+
+  ### 6. 风险过滤（关联理念5：风险排查）
+  - 通过 `search_stock_news` 检查是否有基本面利空/利好支撑背离方向
+  - 基本面恶化导致的下跌中，底背离可能反复失败
+
+  ### 7. 输出要求
+  - 明确指出是否存在背离及背离类型（顶背离/底背离）
+  - 给出背离强度评级（弱/中/强）
+  - 给出对应的时间周期（日线/周线）
+  - 给出操作建议及止损位
+
+  评分调整建议：
+  - 强底背离确认：`sentiment_score +15`
+  - 弱底背离确认：`sentiment_score +8`
+  - 强顶背离确认：`sentiment_score -15`
+  - 弱顶背离确认：`sentiment_score -8`
+  - 多周期共振底背离：`sentiment_score +20`
+  - 多周期共振顶背离：`sentiment_score -20`
+  - 无背离信号：不调整基础分
