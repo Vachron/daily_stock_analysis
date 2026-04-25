@@ -608,6 +608,56 @@ class ConversationMessage(Base):
     created_at = Column(DateTime, default=datetime.now, index=True)
 
 
+class ScreenerResult(Base):
+    """每日选股结果记录。"""
+
+    __tablename__ = 'screener_results'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    screen_date = Column(Date, nullable=False, index=True)
+    code = Column(String(10), nullable=False, index=True)
+    name = Column(String(50))
+
+    score = Column(Float, nullable=False, default=0.0)
+    rank = Column(Integer)
+    strategy_tag = Column(String(64))
+
+    price_at_screen = Column(Float)
+    market_cap = Column(Float)
+    turnover_rate = Column(Float)
+    pe_ratio = Column(Float)
+    pb_ratio = Column(Float)
+
+    signals_json = Column(Text)
+
+    status = Column(String(16), nullable=False, default='watch')
+    days_held = Column(Integer, default=0)
+    return_pct = Column(Float)
+    max_return_pct = Column(Float)
+    max_drawdown_pct = Column(Float)
+    exit_price = Column(Float)
+    exit_date = Column(Date)
+    exit_reason = Column(String(32))
+
+    backtest_verified = Column(Boolean, default=False)
+    backtest_outcome = Column(String(16))
+
+    created_at = Column(DateTime, default=datetime.now, index=True)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'screen_date',
+            'code',
+            'strategy_tag',
+            name='uix_screener_date_code_strategy',
+        ),
+        Index('ix_screener_date_rank', 'screen_date', 'rank'),
+        Index('ix_screener_status', 'status', 'screen_date'),
+    )
+
+
 class LLMUsage(Base):
     """One row per litellm.completion() call — token-usage audit log."""
 

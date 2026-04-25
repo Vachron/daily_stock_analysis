@@ -1,0 +1,102 @@
+name: daily_pick_10
+display_name: 每日精选10股
+description: 全市场多因子筛选，每日选出10只A股观察，15-30天后回测验证胜率。
+category: screener
+core_rules: [1, 2, 3, 4, 5]
+required_tools:
+  - get_full_market_quotes
+  - get_daily_history
+aliases: [选股, 每日选股, 精选10股, daily_pick]
+default_active: false
+default_router: false
+default_priority: 5
+market_regimes: [trending_up, range_bound]
+
+instructions: |
+  **每日精选10股策略（Daily Pick 10 Strategy）**
+
+  目标：从全市场A股中筛选出10只最具潜力的股票，纳入观察池，15-30天后回测验证。
+
+  选股流程：
+
+  1. **全市场扫描**
+     - 获取沪深两市全部A股实时行情（约5000只）
+     - 使用 akshare 的 ak.stock_zh_a_spot_em() 或 efinance 的 ef.stock.get_realtime_quotes()
+
+  2. **基础过滤（硬性条件，不满足直接淘汰）**
+     - 排除 ST / *ST 股票
+     - 排除上市不足60个交易日的新股
+     - 股价范围：3元 ~ 100元（排除低价股和高价股）
+     - 总市值范围：30亿 ~ 5000亿（排除微盘股和超大盘股）
+     - 换手率范围：1% ~ 25%（排除流动性不足和过度投机）
+     - PE范围：0 ~ 200（排除亏损和估值泡沫）
+     - PB范围：0 ~ 20（排除破净和估值泡沫）
+
+  3. **多因子评分（满分100分）**
+     - 换手率因子（25分）：适度活跃（2%-8%）最佳
+     - 动量因子（25分）：温和上涨（-2%~+3%）最佳，避免追高
+     - 估值因子（25分）：PE 10-40、PB 1-5 为合理区间
+     - 市值因子（25分）：中盘股（50-500亿）成长性最佳
+
+  4. **排序与选股**
+     - 按综合评分降序排列
+     - 取 Top 10 作为当日精选
+     - 记录选股日期、价格、评分、信号
+
+  5. **观察与追踪**
+     - 每日更新观察池中股票的收益率
+     - 记录最大收益、最大回撤
+     - 止损线：-8%  |  止盈线：+15%  |  观察期：30个自然日
+     - 到期或触发止损/止盈后自动关闭观察
+
+  6. **回测验证**
+     - 观察期结束后，与系统回测引擎交叉验证
+     - 统计胜率、平均收益、最大回撤
+     - 反馈到评分权重，持续优化选股策略
+
+  使用方式：
+  - CLI: python main.py --screen
+  - API: POST /api/v1/screener/run
+  - 定时: 配合 SCHEDULE_ENABLED=true 每日自动执行
+
+parameters:
+  top_n:
+    type: int
+    default: 10
+    description: 每日选出的股票数量
+  min_market_cap:
+    type: float
+    default: 3000000000
+    description: 最小总市值（元），默认30亿
+  max_market_cap:
+    type: float
+    default: 500000000000
+    description: 最大总市值（元），默认5000亿
+  min_turnover_rate:
+    type: float
+    default: 1.0
+    description: 最小换手率（%）
+  max_turnover_rate:
+    type: float
+    default: 25.0
+    description: 最大换手率（%）
+  min_price:
+    type: float
+    default: 3.0
+    description: 最低股价（元）
+  max_price:
+    type: float
+    default: 100.0
+    description: 最高股价（元）
+  stop_loss_pct:
+    type: float
+    default: -8.0
+    description: 止损线（%）
+  take_profit_pct:
+    type: float
+    default: 15.0
+    description: 止盈线（%）
+  watch_days:
+    type: int
+    default: 30
+    description: 观察期天数（自然日）

@@ -357,6 +357,44 @@ def parse_arguments() -> argparse.Namespace:
         help='强制回测（即使已有回测结果也重新计算）'
     )
 
+    # === Screener ===
+    parser.add_argument(
+        '--screen',
+        action='store_true',
+        help='运行每日选股（从全市场A股中筛选Top N股票）'
+    )
+
+    parser.add_argument(
+        '--screen-demo',
+        action='store_true',
+        help='使用模拟数据运行选股（非交易时段体验用）'
+    )
+
+    parser.add_argument(
+        '--screen-top',
+        type=int,
+        default=10,
+        help='选股数量（默认10）'
+    )
+
+    parser.add_argument(
+        '--screen-track',
+        action='store_true',
+        help='更新观察池追踪数据（收益、止损止盈检查）'
+    )
+
+    parser.add_argument(
+        '--screen-feedback',
+        action='store_true',
+        help='将回测结果反馈到选股记录'
+    )
+
+    parser.add_argument(
+        '--screen-report',
+        action='store_true',
+        help='查看选股表现统计报告'
+    )
+
     return parser.parse_args()
 
 
@@ -817,6 +855,66 @@ def main() -> int:
                 f"回测完成: processed={stats.get('processed')} saved={stats.get('saved')} "
                 f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
             )
+            return 0
+
+        if getattr(args, 'screen', False) or getattr(args, 'screen_demo', False):
+            is_demo = getattr(args, 'screen_demo', False)
+            if is_demo:
+                logger.info("模式: 每日选股 [DEMO - 模拟数据]")
+            else:
+                logger.info("模式: 每日选股")
+            from src.services.screener_service import ScreenerService
+
+            service = ScreenerService()
+            result = service.run_daily_screen(
+                top_n=getattr(args, 'screen_top', 10),
+                demo=is_demo,
+            )
+            logger.info(
+                f"选股完成: screened={result.get('screened')} saved={result.get('saved')} "
+                f"date={result.get('screen_date')}"
+            )
+            for c in result.get('candidates', []):
+                logger.info(
+                    f"  #{c['rank']} {c['name']}({c['code']}) 评分={c['score']:.1f} "
+                    f"价格={c['price']:.2f} 市值={c['market_cap_yi']:.1f}亿 "
+                    f"换手={c['turnover_rate']:.2f}% PE={c['pe_ratio']:.1f}"
+                )
+            return 0
+
+        if getattr(args, 'screen_track', False):
+            logger.info("模式: 更新选股追踪")
+            from src.services.screener_service import ScreenerService
+
+            service = ScreenerService()
+            result = service.update_tracking_from_market()
+            logger.info(f"追踪更新完成: updated={result.get('updated')} closed={result.get('closed')}")
+            return 0
+
+        if getattr(args, 'screen_feedback', False):
+            logger.info("模式: 回测反馈")
+            from src.services.screener_service import ScreenerService
+
+            service = ScreenerService()
+            result = service.apply_backtest_feedback()
+            logger.info(f"回测反馈完成: verified={result.get('verified')} total={result.get('total_checked')}")
+            return 0
+
+        if getattr(args, 'screen_report', False):
+            logger.info("模式: 选股报告")
+            from src.services.screener_service import ScreenerService
+
+            service = ScreenerService()
+            perf = service.get_performance_summary()
+            logger.info(f"选股表现统计:")
+            logger.info(f"  总数: {perf.get('total', 0)}")
+            logger.info(f"  胜率: {perf.get('win_rate', 0):.1f}%")
+            logger.info(f"  平均收益: {perf.get('avg_return', 0):.2f}%")
+            logger.info(f"  最大收益: {perf.get('max_return', 0):.2f}%")
+            logger.info(f"  最大亏损: {perf.get('min_return', 0):.2f}%")
+
+            watch = service.get_watch_list(days=30)
+            logger.info(f"  当前观察池: {watch.get('total', 0)} 只")
             return 0
 
         # 模式1: 仅大盘复盘
