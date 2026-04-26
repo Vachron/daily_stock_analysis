@@ -658,6 +658,34 @@ class ScreenerResult(Base):
     )
 
 
+class ScreenerInsight(Base):
+    """选股 AI 洞察 — Top N 股票的 LLM 增强分析结果。"""
+
+    __tablename__ = 'screener_insights'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    screen_date = Column(Date, nullable=False, index=True)
+    code = Column(String(10), nullable=False, index=True)
+    name = Column(String(50))
+
+    news_summary = Column(Text)
+    signal_interpretation = Column(Text)
+    sector_correlation = Column(Text)
+    risk_warnings = Column(Text)
+    overall_assessment = Column(Text)
+
+    model_used = Column(String(128))
+    generated_at = Column(DateTime, default=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'screen_date',
+            'code',
+            name='uix_insight_date_code',
+        ),
+    )
+
+
 class StockPoolMeta(Base):
     """股票池元信息 — 记录初始化状态、过期时间等。"""
 

@@ -79,6 +79,8 @@ export interface ScreenerRunResponse {
   marketRegime?: string;
   marketRegimeLabel?: string;
   optimizedWeightsApplied?: boolean;
+  status?: string;
+  message?: string;
 }
 
 export interface ScreenerPickItem {
@@ -195,4 +197,18 @@ export interface PoolInitResponse {
 export interface PoolCancelResponse {
   cancelled: boolean;
   message: string;
+}
+
+export interface ScreenerInsightItem {
+  id: number;
+  screenDate: string | null;
+  code: string;
+  name: string | null;
+  newsSummary: string | null;
+  signalInterpretation: string | null;
+  sectorCorrelation: string | null;
+  riskWarnings: string | null;
+  overallAssessment: string | null;
+  modelUsed: string | null;
+  generatedAt: string | null;
 }

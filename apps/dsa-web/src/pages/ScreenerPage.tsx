@@ -1,5 +1,6 @@
 import type React from 'react';
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Crosshair,
   Eye,
@@ -17,6 +18,10 @@ import {
   CheckCircle2,
   XCircle,
   AlertTriangle,
+  MessageSquare,
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { screenerApi } from '../api/screener';
 import { getParsedApiError } from '../api/error';
@@ -24,7 +29,6 @@ import type { ParsedApiError } from '../api/error';
 import type { PoolStatusResponse, PoolSummaryResponse } from '../types/screener';
 import {
   ApiErrorAlert,
-  Badge,
   Card,
   EmptyState,
   StatCard,
@@ -35,6 +39,7 @@ import type {
   ScreenerPerformanceResponse,
   StrategyScores,
   DataFetchFailure,
+  ScreenerInsightItem,
 } from '../types/screener';
 
 type TabKey = 'today' | 'watch' | 'performance';
@@ -54,11 +59,11 @@ function capYi(value?: number | null): string {
 function statusBadge(status: string) {
   switch (status) {
     case 'watch':
-      return <Badge variant="info">观察中</Badge>;
+      return <span className="text-xs text-cyan">观察中</span>;
     case 'closed':
-      return <Badge variant="default">已关闭</Badge>;
+      return <span className="text-xs text-secondary-text">已关闭</span>;
     default:
-      return <Badge variant="default">{status}</Badge>;
+      return <span className="text-xs text-secondary-text">{status}</span>;
   }
 }
 
@@ -66,13 +71,13 @@ function exitReasonBadge(reason?: string | null) {
   if (!reason) return null;
   switch (reason) {
     case 'stop_loss':
-      return <Badge variant="danger">止损</Badge>;
+      return <span className="text-xs text-danger">止损</span>;
     case 'take_profit':
-      return <Badge variant="success">止盈</Badge>;
+      return <span className="text-xs text-success">止盈</span>;
     case 'window_expired':
-      return <Badge variant="warning">到期</Badge>;
+      return <span className="text-xs text-warning">到期</span>;
     default:
-      return <Badge variant="default">{reason}</Badge>;
+      return <span className="text-xs text-secondary-text">{reason}</span>;
   }
 }
 
@@ -85,15 +90,8 @@ function returnCell(value?: number | null) {
 function scoreBar(score: number) {
   const pctVal = Math.min(100, Math.max(0, score));
   const color =
-    pctVal >= 80 ? 'bg-success' : pctVal >= 60 ? 'bg-cyan' : pctVal >= 40 ? 'bg-warning' : 'bg-danger';
-  return (
-    <div className="flex items-center gap-2">
-      <div className="h-1.5 w-16 rounded-full bg-elevated/75">
-        <div className={`h-full rounded-full transition-all ${color}`} style={{ width: `${pctVal}%` }} />
-      </div>
-      <span className="font-mono text-xs tabular-nums text-foreground">{score.toFixed(0)}</span>
-    </div>
-  );
+    pctVal >= 80 ? 'text-success' : pctVal >= 60 ? 'text-cyan' : pctVal >= 40 ? 'text-warning' : 'text-danger';
+  return <span className={`font-mono text-sm tabular-nums font-semibold ${color}`}>{score.toFixed(1)}</span>;
 }
 
 const TAB_ITEMS: { key: TabKey; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
@@ -103,6 +101,8 @@ const TAB_ITEMS: { key: TabKey; label: string; icon: React.ComponentType<{ class
 ];
 
 const ScreenerPage: React.FC = () => {
+  const navigate = useNavigate();
+
   useEffect(() => {
     document.title = '智能选股 - DSA';
   }, []);
@@ -122,6 +122,13 @@ const ScreenerPage: React.FC = () => {
   const [runError, setRunError] = useState<ParsedApiError | null>(null);
   const [dataFailures, setDataFailures] = useState<DataFetchFailure[]>([]);
   const [qualitySummary, setQualitySummary] = useState<Record<string, number> | null>(null);
+
+  // AI Insights
+  const [insights, setInsights] = useState<ScreenerInsightItem[]>([]);
+  const [insightMap, setInsightMap] = useState<Record<string, ScreenerInsightItem>>({});
+  const [isLoadingInsights, setIsLoadingInsights] = useState(false);
+  const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+  const [expandedInsight, setExpandedInsight] = useState<string | null>(null);
 
   // Watch list
   const [watchList, setWatchList] = useState<ScreenerPickItem[]>([]);
@@ -250,6 +257,10 @@ const ScreenerPage: React.FC = () => {
         clearInterval(poolPollRef.current);
         poolPollRef.current = null;
       }
+      if (screenerPollRef.current) {
+        clearInterval(screenerPollRef.current);
+        screenerPollRef.current = null;
+      }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -259,24 +270,106 @@ const ScreenerPage: React.FC = () => {
     }
   }, [poolStatus?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const screenerPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const handleAskStock = useCallback((code: string, name: string) => {
+    navigate(`/chat?stock=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
+  }, [navigate]);
+
+  const fetchInsights = useCallback(async () => {
+    setIsLoadingInsights(true);
+    try {
+      const result = await screenerApi.getInsights(todayDate);
+      setInsights(result.insights);
+      const map: Record<string, ScreenerInsightItem> = {};
+      for (const ins of result.insights) {
+        map[ins.code] = ins;
+      }
+      setInsightMap(map);
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingInsights(false);
+    }
+  }, [todayDate]);
+
+  const handleGenerateInsights = useCallback(async () => {
+    setIsGeneratingInsights(true);
+    try {
+      await screenerApi.generateInsights();
+      setTimeout(() => fetchInsights(), 5000);
+    } catch {
+      // ignore
+    } finally {
+      setIsGeneratingInsights(false);
+    }
+  }, [fetchInsights]);
+
+  const toggleInsight = useCallback((code: string) => {
+    setExpandedInsight(prev => prev === code ? null : code);
+  }, []);
+
+  useEffect(() => {
+    fetchInsights();
+  }, [fetchInsights]);
+
   const handleRun = async () => {
     setIsRunning(true);
     setRunError(null);
     setDataFailures([]);
     try {
       const result = await screenerApi.run({ topN, scanMode });
-      if (result.dataFailures && result.dataFailures.length > 0) {
-        setDataFailures(result.dataFailures);
+      if (result.status === 'running') {
+        if (screenerPollRef.current) clearInterval(screenerPollRef.current);
+        screenerPollRef.current = setInterval(async () => {
+          try {
+            const status = await screenerApi.getRunStatus();
+            if (status.status === 'completed') {
+              if (screenerPollRef.current) {
+                clearInterval(screenerPollRef.current);
+                screenerPollRef.current = null;
+              }
+              if (status.dataFailures && status.dataFailures.length > 0) {
+                setDataFailures(status.dataFailures);
+              }
+              if (status.qualitySummary) {
+                setQualitySummary(status.qualitySummary);
+              }
+              setIsRunning(false);
+              await fetchTodayPicks();
+              if (activeTab === 'watch') await fetchWatchList();
+              if (activeTab === 'performance') await fetchPerformance();
+              fetchInsights();
+            } else if (status.status === 'failed') {
+              if (screenerPollRef.current) {
+                clearInterval(screenerPollRef.current);
+                screenerPollRef.current = null;
+              }
+              setIsRunning(false);
+              setRunError({ title: '选股失败', message: status.message || '选股执行失败', rawMessage: status.message || '', category: 'unknown' });
+            }
+          } catch {
+            if (screenerPollRef.current) {
+              clearInterval(screenerPollRef.current);
+              screenerPollRef.current = null;
+            }
+            setIsRunning(false);
+          }
+        }, 3000);
+      } else {
+        if (result.dataFailures && result.dataFailures.length > 0) {
+          setDataFailures(result.dataFailures);
+        }
+        if (result.qualitySummary) {
+          setQualitySummary(result.qualitySummary);
+        }
+        setIsRunning(false);
+        await fetchTodayPicks();
+        if (activeTab === 'watch') await fetchWatchList();
+        if (activeTab === 'performance') await fetchPerformance();
       }
-      if (result.qualitySummary) {
-        setQualitySummary(result.qualitySummary);
-      }
-      await fetchTodayPicks();
-      if (activeTab === 'watch') await fetchWatchList();
-      if (activeTab === 'performance') await fetchPerformance();
     } catch (err) {
       setRunError(getParsedApiError(err));
-    } finally {
       setIsRunning(false);
     }
   };
@@ -384,9 +477,9 @@ const ScreenerPage: React.FC = () => {
                 <>
                   <span className="text-border">|</span>
                   <span className="text-xs text-secondary-text">市场状态</span>
-                  <Badge variant={regime === 'trending_up' ? 'success' : regime === 'trending_down' ? 'danger' : 'info'}>
+                  <span className={`text-xs font-medium ${regime === 'trending_up' ? 'text-success' : regime === 'trending_down' ? 'text-danger' : 'text-cyan'}`}>
                     {regimeLabel || regime}
-                  </Badge>
+                  </span>
                 </>
               );
             }
@@ -396,11 +489,23 @@ const ScreenerPage: React.FC = () => {
             <>
               <span className="text-border">|</span>
               <span className="text-xs text-secondary-text">质量分布</span>
-              {qualitySummary.premium > 0 && <Badge variant="success">优质 {qualitySummary.premium}</Badge>}
-              {qualitySummary.standard > 0 && <Badge variant="info">标准 {qualitySummary.standard}</Badge>}
-              {qualitySummary.marginal > 0 && <Badge variant="warning">边缘 {qualitySummary.marginal}</Badge>}
-              {qualitySummary.excluded > 0 && <Badge variant="danger">排除 {qualitySummary.excluded}</Badge>}
+              {qualitySummary.premium > 0 && <span className="text-xs text-success">优质 {qualitySummary.premium}</span>}
+              {qualitySummary.standard > 0 && <span className="text-xs text-cyan">标准 {qualitySummary.standard}</span>}
+              {qualitySummary.marginal > 0 && <span className="text-xs text-warning">边缘 {qualitySummary.marginal}</span>}
+              {qualitySummary.excluded > 0 && <span className="text-xs text-danger">排除 {qualitySummary.excluded}</span>}
             </>
+          )}
+          <div className="flex-1" />
+          {sortedPicks.length > 0 && (
+            <button
+              type="button"
+              onClick={insights.length > 0 ? fetchInsights : handleGenerateInsights}
+              disabled={isGeneratingInsights || isLoadingInsights}
+              className="btn-secondary flex items-center gap-1.5 text-xs"
+            >
+              <Sparkles className={`h-3.5 w-3.5 ${isGeneratingInsights ? 'animate-pulse' : ''}`} />
+              {insights.length > 0 ? `AI 洞察 (${insights.length})` : isGeneratingInsights ? 'AI 分析中...' : '生成 AI 洞察'}
+            </button>
           )}
         </div>
         {dataFailures.length > 0 && (
@@ -414,11 +519,11 @@ const ScreenerPage: React.FC = () => {
             <div className="flex flex-wrap gap-1.5">
               {dataFailures.slice(0, 10).map((f) => (
                 <Tooltip key={f.code} content={`${f.name}(${f.code}): ${f.reason}`}>
-                  <Badge variant="warning">{f.name || f.code}</Badge>
+                  <span className="text-xs text-warning">{f.name || f.code}</span>
                 </Tooltip>
               ))}
               {dataFailures.length > 10 && (
-                <Badge variant="default">+{dataFailures.length - 10} 更多</Badge>
+                <span className="text-xs text-secondary-text">+{dataFailures.length - 10} 更多</span>
               )}
             </div>
           </div>
@@ -437,6 +542,7 @@ const ScreenerPage: React.FC = () => {
                 <th className="screener-table-head-cell">换手率</th>
                 <th className="screener-table-head-cell">PE</th>
                 <th className="screener-table-head-cell">状态</th>
+                <th className="screener-table-head-cell">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -449,11 +555,12 @@ const ScreenerPage: React.FC = () => {
                 const dataFetchFailed = itemAny.dataFetchFailed === true;
                 const hasStrategyData = ss != null;
                 const displayRank = idx + 1;
-                const rankColor = displayRank <= 3 ? 'bg-cyan/20 text-cyan border border-cyan/30' : 'bg-white/5 text-secondary-text border border-white/10';
+                const rankColor = displayRank <= 3 ? 'text-cyan font-bold' : 'text-secondary-text';
                 return (
-                  <tr key={item.id} className={`screener-table-row${dataFetchFailed && hasStrategyData ? ' opacity-70' : ''}`}>
+                  <Fragment key={item.id}>
+                  <tr className={`screener-table-row${dataFetchFailed && hasStrategyData ? ' opacity-70' : ''}`}>
                     <td className="screener-table-cell">
-                      <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${rankColor}`}>
+                      <span className={`font-mono text-sm tabular-nums ${rankColor}`}>
                         {displayRank}
                       </span>
                     </td>
@@ -471,27 +578,28 @@ const ScreenerPage: React.FC = () => {
                     <td className="screener-table-cell">{scoreBar(item.score)}</td>
                     <td className="screener-table-cell">
                       {qualityTierLabel ? (
-                        <Badge variant={qualityTier === 'premium' ? 'success' : qualityTier === 'standard' ? 'info' : 'warning'}>
-                          {qualityTierLabel}
-                        </Badge>
+                        <span className="flex items-center gap-1.5 text-xs">
+                          <span className={`inline-block h-1.5 w-1.5 rounded-full ${qualityTier === 'premium' ? 'bg-success' : qualityTier === 'standard' ? 'bg-cyan' : 'bg-warning'}`} />
+                          <span className="text-secondary-text">{qualityTierLabel}</span>
+                        </span>
                       ) : (
                         <span className="text-xs text-muted-text">--</span>
                       )}
                     </td>
                     <td className="screener-table-cell">
-                      <div className="flex flex-wrap gap-1">
+                      <div className="flex flex-wrap gap-x-2 gap-y-0.5">
                         {triggered.length > 0 ? triggered.slice(0, 3).map((s) => (
                           <Tooltip key={s.name} content={`${s.displayName}: ${s.score}分 (权重${s.weight})`}>
-                            <Badge variant={s.score >= 60 ? 'success' : s.score >= 40 ? 'info' : 'default'}>
+                            <span className={`text-xs ${s.score >= 60 ? 'text-success' : s.score >= 40 ? 'text-cyan' : 'text-secondary-text'}`}>
                               {s.displayName}
-                            </Badge>
+                            </span>
                           </Tooltip>
                         )) : (
                           <span className="text-xs text-muted-text">{dataFetchFailed && hasStrategyData ? '数据缺失' : '--'}</span>
                         )}
                         {triggered.length > 3 && (
                           <Tooltip content={triggered.slice(3).map((s) => s.displayName).join(', ')}>
-                            <Badge variant="default">+{triggered.length - 3}</Badge>
+                            <span className="text-xs text-muted-text">+{triggered.length - 3}</span>
                           </Tooltip>
                         )}
                       </div>
@@ -509,7 +617,72 @@ const ScreenerPage: React.FC = () => {
                       {item.peRatio != null ? item.peRatio.toFixed(1) : '--'}
                     </td>
                     <td className="screener-table-cell">{statusBadge(item.status)}</td>
+                    <td className="screener-table-cell">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => handleAskStock(item.code, item.name || item.code)}
+                          className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
+                          title="AI 问股"
+                        >
+                          <MessageSquare className="h-3.5 w-3.5" />
+                          问股
+                        </button>
+                        {insightMap[item.code] && (
+                          <button
+                            type="button"
+                            onClick={() => toggleInsight(item.code)}
+                            className="inline-flex items-center gap-1 text-xs text-amber hover:text-amber/80 transition-colors"
+                            title="AI 洞察"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            {expandedInsight === item.code ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
+                  {insightMap[item.code] && expandedInsight === item.code && (
+                    <tr key={`insight-${item.code}`}>
+                      <td colSpan={11} className="p-0">
+                        <div className="bg-amber/5 border-t border-b border-amber/20 px-4 py-3">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {insightMap[item.code].newsSummary && (
+                              <div>
+                                <h4 className="text-xs font-medium text-amber mb-1">[新闻解读]</h4>
+                                <p className="text-xs text-secondary-text whitespace-pre-line leading-relaxed">{insightMap[item.code].newsSummary}</p>
+                              </div>
+                            )}
+                            {insightMap[item.code].signalInterpretation && (
+                              <div>
+                                <h4 className="text-xs font-medium text-amber mb-1">[信号解读]</h4>
+                                <p className="text-xs text-secondary-text whitespace-pre-line leading-relaxed">{insightMap[item.code].signalInterpretation}</p>
+                              </div>
+                            )}
+                            {insightMap[item.code].sectorCorrelation && (
+                              <div>
+                                <h4 className="text-xs font-medium text-amber mb-1">[板块联动]</h4>
+                                <p className="text-xs text-secondary-text whitespace-pre-line leading-relaxed">{insightMap[item.code].sectorCorrelation}</p>
+                              </div>
+                            )}
+                            {insightMap[item.code].riskWarnings && (
+                              <div>
+                                <h4 className="text-xs font-medium text-amber mb-1">[风险提示]</h4>
+                                <p className="text-xs text-secondary-text whitespace-pre-line leading-relaxed">{insightMap[item.code].riskWarnings}</p>
+                              </div>
+                            )}
+                          </div>
+                          {insightMap[item.code].overallAssessment && (
+                            <div className="mt-3 pt-2 border-t border-amber/10">
+                              <h4 className="text-xs font-medium text-amber mb-1">[综合评估]</h4>
+                              <p className="text-xs text-secondary-text whitespace-pre-line leading-relaxed">{insightMap[item.code].overallAssessment}</p>
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -590,16 +763,17 @@ const ScreenerPage: React.FC = () => {
                     <th className="screener-table-head-cell">最大收益</th>
                     <th className="screener-table-head-cell">最大回撤</th>
                     <th className="screener-table-head-cell">回测验证</th>
+                    <th className="screener-table-head-cell">操作</th>
                   </tr>
                 </thead>
                 <tbody>
                   {watching.map((item, idx) => {
                     const watchRank = idx + 1;
-                    const rankColor = watchRank <= 3 ? 'bg-cyan/20 text-cyan border border-cyan/30' : 'bg-white/5 text-secondary-text border border-white/10';
+                    const rankColor = watchRank <= 3 ? 'text-cyan font-bold' : 'text-secondary-text';
                     return (
                     <tr key={item.id} className="screener-table-row">
                       <td className="screener-table-cell">
-                        <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${rankColor}`}>
+                        <span className={`font-mono text-sm tabular-nums ${rankColor}`}>
                           {watchRank}
                         </span>
                       </td>
@@ -645,6 +819,17 @@ const ScreenerPage: React.FC = () => {
                         ) : (
                           <span className="text-xs text-muted-text">未验证</span>
                         )}
+                      </td>
+                      <td className="screener-table-cell">
+                        <button
+                          type="button"
+                          onClick={() => handleAskStock(item.code, item.name || item.code)}
+                          className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
+                          title="AI 问股"
+                        >
+                          <MessageSquare className="h-3.5 w-3.5" />
+                          问股
+                        </button>
                       </td>
                     </tr>
                   )})}

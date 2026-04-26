@@ -58,15 +58,17 @@ class ScreenerCandidateItem(BaseModel):
 
 
 class ScreenerRunResponse(BaseModel):
-    screened: int = Field(..., description="筛选出的候选数")
-    saved: int = Field(..., description="持久化的记录数")
-    screen_date: str = Field(..., description="选股日期")
+    screened: int = Field(0, description="筛选出的候选数")
+    saved: int = Field(0, description="持久化的记录数")
+    screen_date: str = Field("", description="选股日期")
     candidates: List[ScreenerCandidateItem] = Field(default_factory=list)
     data_failures: List[DataFetchFailureItem] = Field(default_factory=list)
     quality_summary: Optional[Dict[str, int]] = None
     market_regime: Optional[str] = None
     market_regime_label: Optional[str] = None
     optimized_weights_applied: Optional[bool] = None
+    status: str = Field("completed", description="任务状态: running/completed/failed")
+    message: Optional[str] = None
 
 
 class ScreenerPickItem(BaseModel):

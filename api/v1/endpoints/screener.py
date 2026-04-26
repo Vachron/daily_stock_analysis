@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import date
 from typing import Optional
 
@@ -33,63 +34,204 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+_screener_lock = threading.Lock()
+_screener_running = False
+_screener_result = None
+
+
+def _set_state(running=None, result=None):
+    global _screener_running, _screener_result
+    with _screener_lock:
+        if running is not None:
+            _screener_running = running
+        if result is not None:
+            _screener_result = result
+
+
+def _get_state():
+    with _screener_lock:
+        return _screener_running, _screener_result
+
+
+def _run_screener_bg(service, top_n, strategy_tag, config_overrides, demo, db_manager=None):
+    try:
+        result = service.run_daily_screen(
+            top_n=top_n,
+            strategy_tag=strategy_tag,
+            config_overrides=config_overrides,
+            demo=demo,
+        )
+        _set_state(result=result)
+
+        if result.get("status") == "completed" and db_manager:
+            _trigger_insight_generation(result, db_manager)
+    except Exception as exc:
+        logger.error("[Screener] 后台选股失败: %s", exc, exc_info=True)
+        _set_state(result={"status": "failed", "message": str(exc)})
+    finally:
+        _set_state(running=False)
+
+
+def _trigger_insight_generation(screener_result, db_manager):
+    candidates = screener_result.get("candidates", [])
+    if not candidates:
+        return
+    screen_date_str = screener_result.get("screen_date")
+    target_date = date.fromisoformat(screen_date_str) if screen_date_str else date.today()
+
+    candidate_dicts = []
+    for c in candidates:
+        candidate_dicts.append({
+            "code": c.code,
+            "name": c.name,
+            "score": c.score,
+            "quality_tier": getattr(c, "quality_tier", ""),
+            "quality_tier_label": getattr(c, "quality_tier_label", ""),
+            "price": c.price_at_screen if hasattr(c, "price_at_screen") else getattr(c, "price", 0),
+            "market_cap": getattr(c, "market_cap", 0),
+            "pe_ratio": getattr(c, "pe_ratio", None),
+            "turnover_rate": getattr(c, "turnover_rate", None),
+            "signals": getattr(c, "signals", {}),
+            "strategy_scores": getattr(c, "strategy_scores", {}),
+        })
+
+    def _run_insight_bg():
+        try:
+            from src.services.screener_insight_service import ScreenerInsightService
+            insight_service = ScreenerInsightService(db_manager)
+            insight_result = insight_service.generate_insights(
+                candidates=candidate_dicts,
+                screen_date=target_date,
+                market_regime=screener_result.get("market_regime"),
+                market_regime_label=screener_result.get("market_regime_label"),
+            )
+            logger.info("[ScreenerInsight] 自动洞察生成完成: %s", insight_result)
+        except Exception as exc:
+            logger.error("[ScreenerInsight] 自动洞察生成失败: %s", exc, exc_info=True)
+
+    t = threading.Thread(target=_run_insight_bg, daemon=True)
+    t.start()
+    logger.info("[ScreenerInsight] 已启动自动洞察生成，共 %d 只股票", len(candidate_dicts))
+
 
 @router.post(
     "/run",
     response_model=ScreenerRunResponse,
     responses={
-        200: {"description": "选股执行完成"},
+        200: {"description": "选股任务已提交或已完成"},
+        409: {"description": "选股任务正在执行中", "model": ErrorResponse},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="触发每日选股",
-    description="从全市场A股中筛选Top N股票，结果写入 screener_results 表",
+    description="从全市场A股中筛选Top N股票，后台异步执行，通过 /run/status 查看进度",
 )
 def run_screener(
     request: ScreenerRunRequest = ScreenerRunRequest(),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> ScreenerRunResponse:
-    try:
-        service = ScreenerService(db_manager)
-        config_overrides = {}
-        if request.min_market_cap is not None:
-            config_overrides['min_market_cap'] = request.min_market_cap
-        if request.max_market_cap is not None:
-            config_overrides['max_market_cap'] = request.max_market_cap
-        if request.min_price is not None:
-            config_overrides['min_price'] = request.min_price
-        if request.max_price is not None:
-            config_overrides['max_price'] = request.max_price
-        if request.min_turnover_rate is not None:
-            config_overrides['min_turnover_rate'] = request.min_turnover_rate
-        if request.max_turnover_rate is not None:
-            config_overrides['max_turnover_rate'] = request.max_turnover_rate
-        if request.scan_mode is not None:
-            config_overrides['scan_mode'] = request.scan_mode
-        if request.use_optimized_weights is not None:
-            config_overrides['use_optimized_weights'] = request.use_optimized_weights
-        if request.pool_boards:
-            config_overrides['pool_boards'] = request.pool_boards
-        if request.pool_industries:
-            config_overrides['pool_industries'] = request.pool_industries
-        if request.pool_qualities:
-            config_overrides['pool_qualities'] = request.pool_qualities
-        if request.pool_tags:
-            config_overrides['pool_tags'] = request.pool_tags
-        if request.pool_min_base_score is not None:
-            config_overrides['pool_min_base_score'] = request.pool_min_base_score
+    running, _ = _get_state()
 
-        result = service.run_daily_screen(
-            top_n=request.top_n,
-            strategy_tag=request.strategy_tag,
-            config_overrides=config_overrides,
-        )
-        return ScreenerRunResponse(**result)
-    except Exception as exc:
-        logger.error(f"选股执行失败: {exc}", exc_info=True)
+    if running:
         raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"选股执行失败: {str(exc)}"},
+            status_code=409,
+            detail={"error": "already_running", "message": "选股任务正在执行中，请稍后查询结果"},
         )
+
+    config_overrides = {}
+    if request.min_market_cap is not None:
+        config_overrides['min_market_cap'] = request.min_market_cap
+    if request.max_market_cap is not None:
+        config_overrides['max_market_cap'] = request.max_market_cap
+    if request.min_price is not None:
+        config_overrides['min_price'] = request.min_price
+    if request.max_price is not None:
+        config_overrides['max_price'] = request.max_price
+    if request.min_turnover_rate is not None:
+        config_overrides['min_turnover_rate'] = request.min_turnover_rate
+    if request.max_turnover_rate is not None:
+        config_overrides['max_turnover_rate'] = request.max_turnover_rate
+    if request.scan_mode is not None:
+        config_overrides['scan_mode'] = request.scan_mode
+    if request.use_optimized_weights is not None:
+        config_overrides['use_optimized_weights'] = request.use_optimized_weights
+    if request.pool_boards:
+        config_overrides['pool_boards'] = request.pool_boards
+    if request.pool_industries:
+        config_overrides['pool_industries'] = request.pool_industries
+    if request.pool_qualities:
+        config_overrides['pool_qualities'] = request.pool_qualities
+    if request.pool_tags:
+        config_overrides['pool_tags'] = request.pool_tags
+    if request.pool_min_base_score is not None:
+        config_overrides['pool_min_base_score'] = request.pool_min_base_score
+
+    service = ScreenerService(db_manager)
+    _set_state(running=True, result=None)
+
+    t = threading.Thread(
+        target=_run_screener_bg,
+        args=(service, request.top_n, request.strategy_tag, config_overrides, False, db_manager),
+        daemon=True,
+    )
+    t.start()
+
+    return ScreenerRunResponse(
+        screened=0,
+        saved=0,
+        screen_date=date.today().isoformat(),
+        status="running",
+        message="选股任务已提交，请通过 /run/status 查看进度",
+    )
+
+
+@router.get(
+    "/run/status",
+    response_model=ScreenerRunResponse,
+    summary="查询选股任务状态",
+    description="查询当前选股任务的执行状态和结果",
+)
+def get_screener_status() -> ScreenerRunResponse:
+    running, result = _get_state()
+
+    if running:
+        return ScreenerRunResponse(
+            screened=0,
+            saved=0,
+            screen_date=date.today().isoformat(),
+            status="running",
+            message="选股任务执行中...",
+        )
+
+    if result is None:
+        return ScreenerRunResponse(
+            screened=0,
+            saved=0,
+            screen_date="",
+            status="idle",
+            message="暂无选股任务",
+        )
+
+    if result.get("status") == "failed":
+        return ScreenerRunResponse(
+            screened=0,
+            saved=0,
+            screen_date=date.today().isoformat(),
+            status="failed",
+            message=result.get("message", "选股失败"),
+        )
+
+    return ScreenerRunResponse(
+        screened=result.get("screened", 0),
+        saved=result.get("saved", 0),
+        screen_date=result.get("screen_date", ""),
+        candidates=result.get("candidates", []),
+        data_failures=result.get("data_failures", []),
+        quality_summary=result.get("quality_summary"),
+        market_regime=result.get("market_regime"),
+        market_regime_label=result.get("market_regime_label"),
+        optimized_weights_applied=result.get("optimized_weights_applied"),
+        status="completed",
+    )
 
 
 @router.get(
@@ -439,3 +581,148 @@ def cancel_pool_init(
             status_code=500,
             detail={"error": "internal_error", "message": f"取消失败: {str(exc)}"},
         )
+
+
+@router.get(
+    "/insight",
+    summary="获取选股 AI 洞察",
+    description="获取指定日期所有候选股的 AI 增强分析结果",
+)
+def get_insights(
+    screen_date: Optional[str] = Query(None, description="选股日期 (YYYY-MM-DD)"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    try:
+        target_date = date.fromisoformat(screen_date) if screen_date else date.today()
+        from src.services.screener_insight_service import ScreenerInsightService
+        service = ScreenerInsightService(db_manager)
+        insights = service.get_insights_by_date(target_date)
+        return {"insights": insights, "total": len(insights)}
+    except Exception as exc:
+        logger.error(f"获取洞察失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取洞察失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/insight/{code}",
+    summary="获取单只股票 AI 洞察",
+    description="获取指定日期和股票代码的 AI 增强分析结果",
+)
+def get_insight_by_code(
+    code: str,
+    screen_date: Optional[str] = Query(None, description="选股日期 (YYYY-MM-DD)"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    try:
+        target_date = date.fromisoformat(screen_date) if screen_date else date.today()
+        from src.services.screener_insight_service import ScreenerInsightService
+        service = ScreenerInsightService(db_manager)
+        insight = service.get_insight(target_date, code)
+        if not insight:
+            return {"insight": None}
+        return {"insight": insight}
+    except Exception as exc:
+        logger.error(f"获取洞察失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取洞察失败: {str(exc)}"},
+        )
+
+
+@router.post(
+    "/insight/generate",
+    summary="生成选股 AI 洞察",
+    description="对最新选股结果批量生成 AI 增强分析（异步执行）",
+)
+def generate_insights(
+    screen_date: Optional[str] = Query(None, description="指定选股日期 (YYYY-MM-DD)，默认取最近一次"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    target_date = date.fromisoformat(screen_date) if screen_date else None
+    candidate_dicts = []
+    market_regime = None
+    market_regime_label = None
+
+    _, screener_result = _get_state()
+    if screener_result and screener_result.get("status") == "completed":
+        candidates = screener_result.get("candidates", [])
+        if candidates:
+            screen_date_str = screener_result.get("screen_date")
+            target_date = target_date or (date.fromisoformat(screen_date_str) if screen_date_str else date.today())
+            market_regime = screener_result.get("market_regime")
+            market_regime_label = screener_result.get("market_regime_label")
+            for c in candidates:
+                candidate_dicts.append({
+                    "code": c.code,
+                    "name": c.name,
+                    "score": c.score,
+                    "quality_tier": getattr(c, "quality_tier", ""),
+                    "quality_tier_label": getattr(c, "quality_tier_label", ""),
+                    "price": c.price_at_screen if hasattr(c, "price_at_screen") else getattr(c, "price", 0),
+                    "market_cap": getattr(c, "market_cap", 0),
+                    "pe_ratio": getattr(c, "pe_ratio", None),
+                    "turnover_rate": getattr(c, "turnover_rate", None),
+                    "signals": getattr(c, "signals", {}),
+                    "strategy_scores": getattr(c, "strategy_scores", {}),
+                })
+
+    if not candidate_dicts:
+        from src.services.screener_service import ScreenerService
+        service = ScreenerService(db_manager)
+        if not target_date:
+            latest = service.get_today_picks()
+            if not latest.get("picks"):
+                raise HTTPException(
+                    status_code=400,
+                    detail={"error": "no_results", "message": "没有已完成的选股结果，请先运行选股"},
+                )
+            target_date = date.fromisoformat(latest["screen_date"]) if latest.get("screen_date") else date.today()
+        else:
+            latest = service.get_picks_by_date(target_date)
+
+        picks = latest.get("picks", [])
+        if not picks:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "no_candidates", "message": "选股结果为空"},
+            )
+
+        for p in picks:
+            p_any = p if isinstance(p, dict) else p.__dict__ if hasattr(p, '__dict__') else {}
+            candidate_dicts.append({
+                "code": p_any.get("code", ""),
+                "name": p_any.get("name", ""),
+                "score": p_any.get("score", 0),
+                "quality_tier": p_any.get("qualityTier", p_any.get("quality_tier", "")),
+                "quality_tier_label": p_any.get("qualityTierLabel", p_any.get("quality_tier_label", "")),
+                "price": p_any.get("priceAtScreen", p_any.get("price_at_screen", p_any.get("price", 0))),
+                "market_cap": p_any.get("marketCap", p_any.get("market_cap", 0)),
+                "pe_ratio": p_any.get("peRatio", p_any.get("pe_ratio", None)),
+                "turnover_rate": p_any.get("turnoverRate", p_any.get("turnover_rate", None)),
+                "signals": p_any.get("signals", {}),
+                "strategy_scores": p_any.get("strategyScores", p_any.get("strategy_scores", {})),
+            })
+        market_regime = latest.get("market_regime")
+        market_regime_label = latest.get("market_regime_label")
+
+    def _run_bg():
+        try:
+            from src.services.screener_insight_service import ScreenerInsightService
+            service = ScreenerInsightService(db_manager)
+            result = service.generate_insights(
+                candidates=candidate_dicts,
+                screen_date=target_date,
+                market_regime=market_regime,
+                market_regime_label=market_regime_label,
+            )
+            logger.info("[ScreenerInsight] 洞察生成完成: %s", result)
+        except Exception as exc:
+            logger.error("[ScreenerInsight] 洞察生成失败: %s", exc, exc_info=True)
+
+    t = threading.Thread(target=_run_bg, daemon=True)
+    t.start()
+
+    return {"status": "generating", "message": f"正在为 {len(candidate_dicts)} 只股票生成 AI 洞察，请稍后通过 /insight 查看"}

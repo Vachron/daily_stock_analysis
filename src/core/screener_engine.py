@@ -14,9 +14,10 @@ from __future__ import annotations
 import json
 import logging
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pandas as pd
 
@@ -281,7 +282,13 @@ class ScreenerEngine:
             base_score = entry.get("base_score", 0)
 
             strategy_scores: Dict[str, Any] = {}
-            hist_df = self._fetch_stock_history(code)
+            if code in failed_codes:
+                hist_df = None
+                skipped_count += 1
+            else:
+                hist_df = self._fetch_stock_history(code)
+                if hist_df is None or (hist_df is not None and len(hist_df) < 20):
+                    failed_codes.add(code)
             if hist_df is not None and not hist_df.empty:
                 history_cache[code] = hist_df
             realtime_info = {
@@ -419,8 +426,19 @@ class ScreenerEngine:
                 end_date=last_date,
             )
             if df is None or df.empty:
-                logger.warning("[Screener] tushare daily 返回为空")
-                return None
+                if len(trade_dates) > 1:
+                    prev_date = trade_dates[1]
+                    logger.warning("[Screener] tushare daily %s 返回为空，尝试前一交易日 %s", last_date, prev_date)
+                    df = fetcher._call_api_with_rate_limit(
+                        "daily",
+                        start_date=prev_date,
+                        end_date=prev_date,
+                    )
+                    if df is not None and not df.empty:
+                        last_date = prev_date
+                if df is None or df.empty:
+                    logger.warning("[Screener] tushare daily 返回为空")
+                    return None
 
             stock_list = fetcher.get_stock_list()
             name_map: Dict[str, str] = {}
@@ -573,9 +591,12 @@ class ScreenerEngine:
 
         candidates = []
         data_failures: List[DataFetchFailure] = []
+        history_cache: Dict[str, pd.DataFrame] = {}
 
         total = len(df)
         processed = 0
+        failed_codes: Set[str] = set()
+        skipped_count = 0
 
         for _, row in df.iterrows():
             code = str(row.get('_code', ''))
@@ -596,7 +617,13 @@ class ScreenerEngine:
             base_score += self._score_market_cap(market_cap, signals)
 
             strategy_scores: Dict[str, Any] = {}
-            hist_df = self._fetch_stock_history(code)
+            if code in failed_codes:
+                hist_df = None
+                skipped_count += 1
+            else:
+                hist_df = self._fetch_stock_history(code)
+                if hist_df is None or (hist_df is not None and len(hist_df) < 20):
+                    failed_codes.add(code)
             realtime_info = {
                 "turnover_rate": turnover_rate,
                 "pct_chg": pct_chg,
@@ -678,13 +705,19 @@ class ScreenerEngine:
 
             processed += 1
             if processed % 200 == 0:
-                logger.debug("[Screener] 已评分 %d/%d 只股票", processed, total)
+                logger.debug(
+                    "[Screener] 已评分 %d/%d 只股票 (跳过失败 %d 只)",
+                    processed, total, skipped_count,
+                )
+
+        if skipped_count > 0:
+            logger.info("[Screener] 共跳过 %d 只数据获取失败股票", skipped_count)
 
         candidates.sort(key=lambda c: c.score, reverse=True)
         for i, c in enumerate(candidates, 1):
             c.rank = i
 
-        return candidates, data_failures
+        return candidates, data_failures, history_cache
 
     def _detect_market_regime(self) -> Any:
         from src.core.market_regime import MarketRegimeDetector
@@ -837,6 +870,8 @@ class ScreenerEngine:
         except Exception as e:
             logger.warning("[Screener] 日线数据持久化失败(不影响选股结果): %s", e)
 
+    _FETCH_TIMEOUT_SECONDS = 15
+
     def _fetch_stock_history(self, code: str, persist: bool = False) -> Optional[pd.DataFrame]:
         try:
             if self._data_factory is None:
@@ -844,7 +879,18 @@ class ScreenerEngine:
                 self._data_factory = DataProviderFactory()
             end = date.today()
             start = end - timedelta(days=120)
-            df = self._data_factory.get_daily_history(code, start_date=start, end_date=end)
+
+            def _do_fetch():
+                return self._data_factory.get_daily_history(code, start_date=start, end_date=end)
+
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_do_fetch)
+                try:
+                    df = future.result(timeout=self._FETCH_TIMEOUT_SECONDS)
+                except FuturesTimeout:
+                    logger.debug("[Screener] 获取 %s 历史数据超时 (%ds)", code, self._FETCH_TIMEOUT_SECONDS)
+                    return None
+
             if df is not None and not df.empty:
                 if 'date' in df.columns:
                     df = df.sort_values('date').reset_index(drop=True)

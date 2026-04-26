@@ -13,6 +13,7 @@ import type {
   PoolCodesResponse,
   PoolInitResponse,
   PoolCancelResponse,
+  ScreenerInsightItem,
 } from '../types/screener';
 
 export const screenerApi = {
@@ -37,6 +38,14 @@ export const screenerApi = {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/screener/run',
       requestData,
+      { timeout: 10000 },
+    );
+    return toCamelCase<ScreenerRunResponse>(response.data);
+  },
+
+  getRunStatus: async (): Promise<ScreenerRunResponse> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/screener/run/status',
     );
     return toCamelCase<ScreenerRunResponse>(response.data);
   },
@@ -134,5 +143,32 @@ export const screenerApi = {
       '/api/v1/screener/pool/cancel',
     );
     return toCamelCase<PoolCancelResponse>(response.data);
+  },
+
+  getInsights: async (screenDate?: string): Promise<{ insights: ScreenerInsightItem[]; total: number }> => {
+    const params: Record<string, string> = {};
+    if (screenDate) params.screen_date = screenDate;
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/screener/insight',
+      { params },
+    );
+    return toCamelCase<{ insights: ScreenerInsightItem[]; total: number }>(response.data);
+  },
+
+  getInsightByCode: async (code: string, screenDate?: string): Promise<{ insight: ScreenerInsightItem | null }> => {
+    const params: Record<string, string> = {};
+    if (screenDate) params.screen_date = screenDate;
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/screener/insight/${code}`,
+      { params },
+    );
+    return toCamelCase<{ insight: ScreenerInsightItem | null }>(response.data);
+  },
+
+  generateInsights: async (): Promise<{ status: string; message: string }> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/screener/insight/generate',
+    );
+    return toCamelCase<{ status: string; message: string }>(response.data);
   },
 };

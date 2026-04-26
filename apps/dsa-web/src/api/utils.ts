@@ -1,13 +1,25 @@
-import camelcaseKeys from 'camelcase-keys';
+const SNAKE_RE = /_[a-z]/g;
 
-/**
- * 将 snake_case 对象键转换为 camelCase
- * @param data API 响应数据 (snake_case)
- * @returns 转换后的 camelCase 对象
- */
-export function toCamelCase<T>(data: unknown): T {
-    if (data === null || data === undefined) {
-        return data as T;
+function toCamelKey(key: string): string {
+  return key.replace(SNAKE_RE, (m) => m[1].toUpperCase());
+}
+
+function transformKeys(obj: unknown): unknown {
+  if (obj === null || obj === undefined) return obj;
+  if (Array.isArray(obj)) return obj.map(transformKeys);
+  if (typeof obj === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      out[toCamelKey(k)] = transformKeys(v);
     }
-    return camelcaseKeys(data as Record<string, unknown>, { deep: true }) as T;
+    return out;
+  }
+  return obj;
+}
+
+export function toCamelCase<T>(data: unknown): T {
+  if (data === null || data === undefined) {
+    return data as T;
+  }
+  return transformKeys(data) as T;
 }
