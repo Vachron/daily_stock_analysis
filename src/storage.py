@@ -658,6 +658,64 @@ class ScreenerResult(Base):
     )
 
 
+class StockPoolMeta(Base):
+    """股票池元信息 — 记录初始化状态、过期时间等。"""
+
+    __tablename__ = 'stock_pool_meta'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pool_version = Column(String(32), nullable=False, unique=True)
+    status = Column(String(16), nullable=False, default='pending')
+    total_stocks = Column(Integer, default=0)
+    filtered_stocks = Column(Integer, default=0)
+    tagged_stocks = Column(Integer, default=0)
+    excluded_stocks = Column(Integer, default=0)
+    progress_pct = Column(Float, default=0.0)
+    eta_seconds = Column(Float, default=0.0)
+    error_message = Column(Text)
+    expires_at = Column(Date)
+    started_at = Column(DateTime)
+    finished_at = Column(DateTime)
+    created_at = Column(DateTime, default=datetime.now)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+
+class StockPoolEntry(Base):
+    """股票池条目 — 每只股票的分类标签和基础评分。"""
+
+    __tablename__ = 'stock_pool_entries'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    pool_version = Column(String(32), nullable=False, index=True)
+    code = Column(String(10), nullable=False, index=True)
+    name = Column(String(50))
+    board = Column(String(16))
+    industry = Column(String(32))
+    quality_tier = Column(String(16))
+    base_score = Column(Float, default=0.0)
+    tags = Column(Text)
+    is_excluded = Column(Boolean, default=False)
+    exclude_reason = Column(String(64))
+    market_cap = Column(Float)
+    pe_ratio = Column(Float)
+    pb_ratio = Column(Float)
+    price = Column(Float)
+    turnover_rate = Column(Float)
+    updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
+
+    __table_args__ = (
+        UniqueConstraint(
+            'pool_version',
+            'code',
+            name='uix_pool_version_code',
+        ),
+        Index('ix_pool_board', 'pool_version', 'board'),
+        Index('ix_pool_industry', 'pool_version', 'industry'),
+        Index('ix_pool_quality', 'pool_version', 'quality_tier'),
+        Index('ix_pool_excluded', 'pool_version', 'is_excluded'),
+    )
+
+
 class LLMUsage(Base):
     """One row per litellm.completion() call — token-usage audit log."""
 

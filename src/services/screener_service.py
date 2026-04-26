@@ -50,6 +50,7 @@ class ScreenerService:
             return {
                 "screened": 0,
                 "saved": 0,
+                "screen_date": date.today().isoformat(),
                 "candidates": [],
                 "data_failures": [],
                 "quality_summary": run_result.quality_summary,
@@ -210,10 +211,12 @@ class ScreenerService:
                 should_close = False
                 exit_reason = None
 
-                if return_pct <= -8.0:
+                stop_loss_pct, take_profit_pct = self._compute_adaptive_stops(row.code, entry_price)
+
+                if return_pct <= stop_loss_pct:
                     should_close = True
                     exit_reason = 'stop_loss'
-                elif return_pct >= 15.0:
+                elif return_pct >= take_profit_pct:
                     should_close = True
                     exit_reason = 'take_profit'
                 elif days_held >= 30:
@@ -350,6 +353,62 @@ class ScreenerService:
         except Exception as exc:
             logger.debug("[Screener] 查询回测结果失败 %s: %s", code, exc)
         return None
+
+    @staticmethod
+    def _compute_adaptive_stops(code: str, entry_price: float) -> tuple:
+        """Compute volatility-adjusted stop loss and take profit percentages.
+
+        Uses 20-day ATR approximation from recent daily history.
+        Falls back to -8%/+15% if data unavailable.
+        Stop loss = 2 * ATR%, Take profit = 3 * ATR% (1.5:1 reward/risk).
+        """
+        default_stop = -8.0
+        default_tp = 15.0
+
+        try:
+            from data_provider.factory import DataProviderFactory
+            factory = DataProviderFactory()
+            end = date.today()
+            start = end - timedelta(days=60)
+            df = factory.get_daily_history(code, start_date=start, end_date=end)
+            if df is None or len(df) < 15:
+                return default_stop, default_tp
+
+            import numpy as np
+            close = df["close"].values if "close" in df.columns else None
+            high = df["high"].values if "high" in df.columns else None
+            low = df["low"].values if "low" in df.columns else None
+
+            if close is None or high is None or low is None or len(close) < 15:
+                return default_stop, default_tp
+
+            tr_list = []
+            for i in range(1, len(close)):
+                tr = max(
+                    float(high[i]) - float(low[i]),
+                    abs(float(high[i]) - float(close[i - 1])),
+                    abs(float(low[i]) - float(close[i - 1])),
+                )
+                tr_list.append(tr)
+
+            if not tr_list:
+                return default_stop, default_tp
+
+            atr = float(np.mean(tr_list[-14:]))
+            atr_pct = atr / entry_price * 100 if entry_price > 0 else 2.0
+
+            atr_pct = max(atr_pct, 1.5)
+            atr_pct = min(atr_pct, 8.0)
+
+            stop_loss = round(-2.0 * atr_pct, 1)
+            take_profit = round(3.0 * atr_pct, 1)
+
+            stop_loss = max(stop_loss, -15.0)
+            take_profit = min(take_profit, 30.0)
+
+            return stop_loss, take_profit
+        except Exception:
+            return default_stop, default_tp
 
     @staticmethod
     def _result_to_dict(r: ScreenerResult) -> Dict[str, Any]:

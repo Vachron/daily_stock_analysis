@@ -259,11 +259,15 @@ class PytdxFetcher(BaseFetcher):
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从通达信获取原始数据
         
         使用 get_security_bars() 获取日线数据
+        
+        Note: Pytdx returns non-adjusted data.
+        Adjust mode parameter is accepted for interface compatibility.
         
         流程：
         1. 检查是否为美股（不支持）

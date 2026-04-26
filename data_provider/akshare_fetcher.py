@@ -325,7 +325,8 @@ class AkshareFetcher(BaseFetcher):
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从 Akshare 获取原始数据
         
@@ -342,10 +343,8 @@ class AkshareFetcher(BaseFetcher):
         4. 调用对应的 akshare API
         5. 处理返回数据
         """
-        # 根据代码类型选择不同的获取方法
+        self._current_adjust = adjust
         if _is_us_code(stock_code):
-            # 美股：akshare 的 stock_us_daily 接口复权存在已知问题（参见 Issue #311）
-            # 交由 YfinanceFetcher 处理，确保复权价格一致
             raise DataFetchError(
                 f"AkshareFetcher 不支持美股 {stock_code}，请使用 YfinanceFetcher 获取正确的复权价格"
             )
@@ -414,7 +413,7 @@ class AkshareFetcher(BaseFetcher):
                 period="daily",
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
-                adjust="qfq"
+                adjust=getattr(self, '_current_adjust', 'qfq')
             )
 
             api_elapsed = _time.time() - api_start
@@ -449,7 +448,7 @@ class AkshareFetcher(BaseFetcher):
                 symbol=symbol,
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
-                adjust="qfq"
+                adjust=getattr(self, '_current_adjust', 'qfq')
             )
 
             # 标准化新浪数据列名
@@ -495,7 +494,7 @@ class AkshareFetcher(BaseFetcher):
                 symbol=symbol,
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
-                adjust="qfq"
+                adjust=getattr(self, '_current_adjust', 'qfq')
             )
 
             # 标准化腾讯数据列名
@@ -556,7 +555,7 @@ class AkshareFetcher(BaseFetcher):
                 period="daily",
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
-                adjust="qfq"  # 前复权
+                adjust=getattr(self, '_current_adjust', 'qfq')
             )
             
             api_elapsed = _time.time() - api_start
@@ -617,7 +616,7 @@ class AkshareFetcher(BaseFetcher):
             # stock_us_daily 返回全部历史数据，后续需要按日期过滤
             df = ak.stock_us_daily(
                 symbol=symbol,
-                adjust="qfq"  # 前复权
+                adjust=getattr(self, '_current_adjust', 'qfq')
             )
             
             api_elapsed = _time.time() - api_start
@@ -715,7 +714,7 @@ class AkshareFetcher(BaseFetcher):
                 period="daily",
                 start_date=start_date.replace('-', ''),
                 end_date=end_date.replace('-', ''),
-                adjust="qfq"  # 前复权
+                adjust=getattr(self, '_current_adjust', 'qfq')
             )
             
             api_elapsed = _time.time() - api_start

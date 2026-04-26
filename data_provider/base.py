@@ -255,7 +255,8 @@ class BaseFetcher(ABC):
     priority: int = 99  # 优先级数字越小越优先
     
     @abstractmethod
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从数据源获取原始数据（子类必须实现）
         
@@ -263,6 +264,7 @@ class BaseFetcher(ABC):
             stock_code: 股票代码，如 '600519', '000001'
             start_date: 开始日期，格式 'YYYY-MM-DD'
             end_date: 结束日期，格式 'YYYY-MM-DD'
+            adjust: 复权方式，'qfq'=前复权, 'hfq'=后复权, 'none'=不复权
             
         Returns:
             原始数据 DataFrame（列名因数据源而异）
@@ -330,7 +332,8 @@ class BaseFetcher(ABC):
         stock_code: str, 
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        adjust: str = "qfq"
     ) -> pd.DataFrame:
         """
         获取日线数据（统一入口）
@@ -346,6 +349,7 @@ class BaseFetcher(ABC):
             start_date: 开始日期（可选）
             end_date: 结束日期（可选，默认今天）
             days: 获取天数（当 start_date 未指定时使用）
+            adjust: 复权方式，'qfq'=前复权(默认), 'hfq'=后复权, 'none'=不复权
             
         Returns:
             标准化的 DataFrame，包含技术指标
@@ -365,7 +369,7 @@ class BaseFetcher(ABC):
         
         try:
             # Step 1: 获取原始数据
-            raw_df = self._fetch_raw_data(stock_code, start_date, end_date)
+            raw_df = self._fetch_raw_data(stock_code, start_date, end_date, adjust=adjust)
             
             if raw_df is None or raw_df.empty:
                 raise DataFetchError(f"[{self.name}] 未获取到 {stock_code} 的数据")
@@ -496,6 +500,8 @@ class DataFetcherManager:
         self._fetcher_call_locks_lock = RLock()
         self._stock_name_cache: Dict[str, str] = {}
         self._stock_name_cache_lock = RLock()
+        self._circuit_breaker: Dict[str, Dict[str, Any]] = {}
+        self._circuit_breaker_lock = RLock()
         
         if fetchers:
             # 按优先级排序
@@ -524,6 +530,10 @@ class DataFetcherManager:
             self._stock_name_cache = {}
         if not hasattr(self, "_stock_name_cache_lock") or self._stock_name_cache_lock is None:
             self._stock_name_cache_lock = RLock()
+        if not hasattr(self, "_circuit_breaker") or self._circuit_breaker is None:
+            self._circuit_breaker = {}
+        if not hasattr(self, "_circuit_breaker_lock") or self._circuit_breaker_lock is None:
+            self._circuit_breaker_lock = RLock()
 
     def _get_fetchers_snapshot(self) -> List[BaseFetcher]:
         self._ensure_concurrency_guards()
@@ -539,6 +549,41 @@ class DataFetcherManager:
                 lock = RLock()
                 self._fetcher_call_locks[fetcher_id] = lock
             return lock
+
+    _CB_FAIL_THRESHOLD = 5
+    _CB_COOLDOWN_SECONDS = 60
+
+    def _is_fetcher_circuit_open(self, fetcher_name: str) -> bool:
+        self._ensure_concurrency_guards()
+        with self._circuit_breaker_lock:
+            state = self._circuit_breaker.get(fetcher_name)
+            if state is None:
+                return False
+            if state.get("open") and time.time() - state.get("opened_at", 0) > self._CB_COOLDOWN_SECONDS:
+                state["open"] = False
+                state["consecutive_fails"] = 0
+                logger.info("[熔断恢复] %s 冷却期结束，重新纳入数据源轮询", fetcher_name)
+                return False
+            return state.get("open", False)
+
+    def _record_fetcher_success(self, fetcher_name: str) -> None:
+        self._ensure_concurrency_guards()
+        with self._circuit_breaker_lock:
+            if fetcher_name in self._circuit_breaker:
+                self._circuit_breaker[fetcher_name]["consecutive_fails"] = 0
+
+    def _record_fetcher_failure(self, fetcher_name: str) -> None:
+        self._ensure_concurrency_guards()
+        with self._circuit_breaker_lock:
+            state = self._circuit_breaker.setdefault(fetcher_name, {"consecutive_fails": 0, "open": False, "opened_at": 0})
+            state["consecutive_fails"] = state.get("consecutive_fails", 0) + 1
+            if state["consecutive_fails"] >= self._CB_FAIL_THRESHOLD and not state["open"]:
+                state["open"] = True
+                state["opened_at"] = time.time()
+                logger.warning(
+                    "[熔断触发] %s 连续失败 %d 次，暂停该数据源 %ds",
+                    fetcher_name, state["consecutive_fails"], self._CB_COOLDOWN_SECONDS,
+                )
 
     def _call_fetcher_method(self, fetcher: BaseFetcher, method_name: str, *args, **kwargs):
         """Serialize shared fetcher state access through manager-owned per-instance locks."""
@@ -904,7 +949,8 @@ class DataFetcherManager:
         stock_code: str,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
-        days: int = 30
+        days: int = 30,
+        adjust: str = "qfq"
     ) -> Tuple[pd.DataFrame, str]:
         """
         获取日线数据（自动切换数据源）
@@ -921,6 +967,7 @@ class DataFetcherManager:
             start_date: 开始日期
             end_date: 结束日期
             days: 获取天数
+            adjust: 复权方式，'qfq'=前复权(默认), 'hfq'=后复权, 'none'=不复权
             
         Returns:
             Tuple[DataFrame, str]: (数据, 成功的数据源名称)
@@ -973,6 +1020,7 @@ class DataFetcherManager:
                             start_date=start_date,
                             end_date=end_date,
                             days=days,
+                            adjust=adjust,
                         )
                         if df is not None and not df.empty:
                             elapsed = time.time() - request_start
@@ -997,6 +1045,9 @@ class DataFetcherManager:
             raise DataFetchError(error_summary)
 
         for attempt, fetcher in enumerate(fetchers, start=1):
+            if self._is_fetcher_circuit_open(fetcher.name):
+                logger.debug("[熔断跳过] %s 当前处于熔断状态，跳过", fetcher.name)
+                continue
             try:
                 logger.info(f"[数据源尝试 {attempt}/{total_fetchers}] [{fetcher.name}] 获取 {stock_code}...")
                 df = self._call_fetcher_method(
@@ -1005,10 +1056,12 @@ class DataFetcherManager:
                     stock_code=stock_code,
                     start_date=start_date,
                     end_date=end_date,
-                    days=days
+                    days=days,
+                    adjust=adjust,
                 )
                 
                 if df is not None and not df.empty:
+                    self._record_fetcher_success(fetcher.name)
                     elapsed = time.time() - request_start
                     logger.info(
                         f"[数据源完成] {stock_code} 使用 [{fetcher.name}] 获取成功: "
@@ -1017,6 +1070,7 @@ class DataFetcherManager:
                     return df, fetcher.name
                     
             except Exception as e:
+                self._record_fetcher_failure(fetcher.name)
                 error_type, error_reason = summarize_exception(e)
                 error_msg = f"[{fetcher.name}] ({error_type}) {error_reason}"
                 logger.warning(
@@ -1024,9 +1078,9 @@ class DataFetcherManager:
                     f"error_type={error_type}, reason={error_reason}"
                 )
                 errors.append(error_msg)
-                if attempt < total_fetchers:
-                    next_fetcher = fetchers[attempt]
-                    logger.info(f"[数据源切换] {stock_code}: [{fetcher.name}] -> [{next_fetcher.name}]")
+                remaining = [f for f in fetchers[attempt:] if not self._is_fetcher_circuit_open(f.name)]
+                if remaining:
+                    logger.info(f"[数据源切换] {stock_code}: [{fetcher.name}] -> [{remaining[0].name}]")
                 # 继续尝试下一个数据源
                 continue
         

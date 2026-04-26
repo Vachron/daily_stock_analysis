@@ -335,7 +335,8 @@ class EfinanceFetcher(BaseFetcher):
         )),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从 efinance 获取原始数据
         
@@ -351,11 +352,10 @@ class EfinanceFetcher(BaseFetcher):
         4. 调用对应的 efinance API
         5. 处理返回数据
         """
-        # 美股不支持，抛出异常让 DataFetcherManager 切换到 AkshareFetcher/YfinanceFetcher
+        self._current_adjust = adjust
         if _is_us_code(stock_code):
             raise DataFetchError(f"EfinanceFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
         
-        # 根据代码类型选择不同的获取方法
         if _is_etf_code(stock_code):
             return self._fetch_etf_data(stock_code, start_date, end_date)
         else:
@@ -399,8 +399,8 @@ class EfinanceFetcher(BaseFetcher):
                 stock_codes=stock_code,
                 beg=beg_date,
                 end=end_date_fmt,
-                klt=101,  # 日线
-                fqt=1,    # 前复权
+                klt=101,
+                fqt={"qfq": 1, "hfq": 2, "none": 0}.get(getattr(self, '_current_adjust', 'qfq'), 1),
                 timeout=60,
             )
             
@@ -487,8 +487,8 @@ class EfinanceFetcher(BaseFetcher):
                 stock_codes=stock_code,
                 beg=beg_date,
                 end=end_date_fmt,
-                klt=101,  # daily
-                fqt=1,    # forward-adjusted
+                klt=101,
+                fqt={"qfq": 1, "hfq": 2, "none": 0}.get(getattr(self, '_current_adjust', 'qfq'), 1),
                 timeout=60,
             )
 

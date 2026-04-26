@@ -119,25 +119,29 @@ class TushareFetcher(BaseFetcher):
     
     关键策略：
     - 每分钟调用计数器，防止超出配额
-    - 超过 80 次/分钟时强制等待
+    - 超过速率限制时强制等待
     - 失败后指数退避重试
     
-    配额说明（Tushare 免费用户）：
-    - 每分钟最多 80 次请求
-    - 每天最多 500 次请求
+    配额说明：
+    - 免费用户：每分钟 80 次，每天 500 次
+    - 付费用户：每分钟 500 次，每天 5000+ 次
+    - 通过 TUSHARE_RATE_LIMIT 环境变量配置
     """
     
     name = "TushareFetcher"
-    priority = int(os.getenv("TUSHARE_PRIORITY", "2"))  # 默认优先级，会在 __init__ 中根据配置动态调整
+    priority = int(os.getenv("TUSHARE_PRIORITY", "2"))
 
-    def __init__(self, rate_limit_per_minute: int = 80):
+    def __init__(self, rate_limit_per_minute: Optional[int] = None):
         """
         初始化 TushareFetcher
 
         Args:
-            rate_limit_per_minute: 每分钟最大请求数（默认80，Tushare免费配额）
+            rate_limit_per_minute: 每分钟最大请求数（默认从环境变量读取，未设置则 500）
         """
-        self.rate_limit_per_minute = rate_limit_per_minute
+        if rate_limit_per_minute is not None:
+            self.rate_limit_per_minute = rate_limit_per_minute
+        else:
+            self.rate_limit_per_minute = int(os.getenv("TUSHARE_RATE_LIMIT", "500"))
         self._call_count = 0  # 当前分钟内的调用次数
         self._minute_start: Optional[float] = None  # 当前计数周期开始时间
         self._api: Optional[object] = None  # Tushare API 实例
@@ -430,7 +434,8 @@ class TushareFetcher(BaseFetcher):
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从 Tushare 获取原始数据
         
@@ -444,6 +449,10 @@ class TushareFetcher(BaseFetcher):
         3. 执行速率限制检查
         4. 转换股票代码格式
         5. 根据代码类型选择接口并调用
+        
+        Note: Tushare daily/fund_daily returns non-adjusted data.
+        Adjust mode parameter is accepted for interface compatibility
+        but does not affect the returned data.
         """
         if self._api is None:
             raise DataFetchError("Tushare API 未初始化，请检查 Token 配置")

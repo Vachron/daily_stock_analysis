@@ -8,14 +8,31 @@ the detected regime receive a boost; mismatched strategies are dampened.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+def _get_data_dir() -> str:
+    db_path = os.getenv("DATABASE_PATH", "./data/stock_analysis.db")
+    return str(Path(db_path).resolve().parent)
+
+
+_REGIME_STATE_FILE = os.path.join(_get_data_dir(), "market_regime_state.json")
+
+_HYSTERESIS_MARGIN = 0.15
+
+_SECTOR_HOT_VOL_RATIO_THRESHOLD = 1.3
+_SECTOR_HOT_ABS_RETURN_THRESHOLD = 1.0
+_SECTOR_HOT_MAX_TREND_RETURN = 8.0
+_SECTOR_HOT_CONFIDENCE_GATE = 0.6
 
 REGIME_TRENDING_UP = "trending_up"
 REGIME_TRENDING_DOWN = "trending_down"
@@ -55,6 +72,11 @@ STRATEGY_BASE_WEIGHTS: Dict[str, float] = {
     "emotion_cycle": 0.55,
     "one_yang_three_yin": 0.45,
     "risk_filter": 1.0,
+    "volume_price_divergence": 0.8,
+    "volume_surge_reversal": 0.75,
+    "alpha101_001": 0.6,
+    "alpha101_006": 0.6,
+    "alpha101_053": 0.6,
 }
 
 STRATEGY_REGIME_MAP: Dict[str, List[str]] = {
@@ -79,6 +101,11 @@ STRATEGY_REGIME_MAP: Dict[str, List[str]] = {
     "emotion_cycle": [REGIME_SECTOR_HOT],
     "one_yang_three_yin": [],
     "risk_filter": ALL_REGIMES,
+    "volume_price_divergence": [REGIME_TRENDING_UP, REGIME_TRENDING_DOWN, REGIME_SIDEWAYS],
+    "volume_surge_reversal": [REGIME_TRENDING_DOWN, REGIME_SIDEWAYS],
+    "alpha101_001": ALL_REGIMES,
+    "alpha101_006": ALL_REGIMES,
+    "alpha101_053": ALL_REGIMES,
 }
 
 REGIME_BOOST = 1.5
@@ -86,11 +113,13 @@ REGIME_DAMPEN = 0.5
 REGIME_NEUTRAL = 1.0
 
 CATEGORY_WEIGHTS: Dict[str, float] = {
-    "trend": 0.35,
-    "reversal": 0.25,
-    "pattern": 0.15,
-    "framework": 0.15,
-    "screener": 0.0,
+    "trend": 0.30,
+    "reversal": 0.20,
+    "pattern": 0.12,
+    "framework": 0.12,
+    "screener": 0.08,
+    "volume_price": 0.10,
+    "alpha101": 0.08,
 }
 
 
@@ -103,16 +132,24 @@ class RegimeResult:
 
 
 class MarketRegimeDetector:
-    """Detect current market regime from index data."""
+    """Detect current market regime from index data.
+
+    Implements hysteresis: regime switches only when the new regime's
+    confidence exceeds the previous regime's confidence by a margin,
+    preventing flip-flopping on borderline signals.
+    """
 
     def detect(self, index_df: Optional[pd.DataFrame] = None) -> RegimeResult:
         if index_df is not None and len(index_df) >= 20:
-            return self._detect_from_data(index_df)
+            raw = self._detect_from_data(index_df)
+        else:
+            raw = self._detect_from_approximation()
 
-        return self._detect_from_approximation()
+        return self._apply_hysteresis(raw)
 
     def _detect_from_data(self, df: pd.DataFrame) -> RegimeResult:
         close = df["close"].values if "close" in df.columns else np.array([])
+        volume = df["volume"].values if "volume" in df.columns else np.array([])
         if len(close) < 20:
             return RegimeResult(label=REGIME_LABELS.get(REGIME_SIDEWAYS, ""))
 
@@ -127,10 +164,24 @@ class MarketRegimeDetector:
             daily_returns = np.diff(close[-11:]) / close[-11:-1] * 100
             volatility = float(np.std(daily_returns))
 
+        sector_hot_score = 0.0
+        if len(volume) >= 10 and len(close) >= 10:
+            vol_recent = float(np.mean(volume[-5:]))
+            vol_older = float(np.mean(volume[-10:-5]))
+            if vol_older > 0:
+                vol_ratio = vol_recent / vol_older
+            else:
+                vol_ratio = 1.0
+            daily_abs_returns = np.abs(np.diff(close[-11:]) / close[-11:-1] * 100)
+            avg_abs_return = float(np.mean(daily_abs_returns))
+            if vol_ratio > _SECTOR_HOT_VOL_RATIO_THRESHOLD and avg_abs_return > _SECTOR_HOT_ABS_RETURN_THRESHOLD and abs(ret_20d) < _SECTOR_HOT_MAX_TREND_RETURN:
+                sector_hot_score = min((vol_ratio - 1.0) * 2 + avg_abs_return * 0.3, 1.0)
+
         indicators: Dict[str, Any] = {
             "return_5d": round(ret_5d, 2),
             "return_20d": round(ret_20d, 2),
             "volatility": round(volatility, 2),
+            "sector_hot_score": round(sector_hot_score, 2),
         }
 
         if not np.isnan(ma5[-1]) and not np.isnan(ma20[-1]):
@@ -139,7 +190,10 @@ class MarketRegimeDetector:
         else:
             ma_alignment = "neutral"
 
-        if volatility > 2.0:
+        if sector_hot_score > _SECTOR_HOT_CONFIDENCE_GATE:
+            regime = REGIME_SECTOR_HOT
+            confidence = min(sector_hot_score, 0.85)
+        elif volatility > 2.0:
             regime = REGIME_VOLATILE
             confidence = min(volatility / 3.0, 0.9)
         elif ma_alignment == "bullish" and ret_20d > 5:
@@ -193,6 +247,67 @@ class MarketRegimeDetector:
             label=REGIME_LABELS.get(REGIME_SIDEWAYS, ""),
         )
 
+    def _apply_hysteresis(self, raw: RegimeResult) -> RegimeResult:
+        prev = self._load_prev_state()
+        if prev is None:
+            self._save_state(raw)
+            return raw
+
+        if raw.regime == prev["regime"]:
+            self._save_state(raw)
+            return raw
+
+        if raw.confidence >= prev.get("confidence", 0.5) + _HYSTERESIS_MARGIN:
+            logger.info(
+                "[RegimeDetector] 状态切换: %s→%s (置信度 %.2f > %.2f + %.2f)",
+                prev["regime"], raw.regime, raw.confidence,
+                prev.get("confidence", 0.5), _HYSTERESIS_MARGIN,
+            )
+            self._save_state(raw)
+            return raw
+
+        logger.debug(
+            "[RegimeDetector] 状态保持: %s (新状态 %s 置信度 %.2f 不足以切换，需 > %.2f)",
+            prev["regime"], raw.regime, raw.confidence,
+            prev.get("confidence", 0.5) + _HYSTERESIS_MARGIN,
+        )
+        return RegimeResult(
+            regime=prev["regime"],
+            confidence=prev.get("confidence", 0.5),
+            indicators=raw.indicators,
+            label=REGIME_LABELS.get(prev["regime"], ""),
+        )
+
+    @staticmethod
+    def _load_prev_state() -> Optional[Dict[str, Any]]:
+        if not os.path.exists(_REGIME_STATE_FILE):
+            return None
+        try:
+            with open(_REGIME_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if "regime" in data and "date" in data:
+                from datetime import date
+                saved = date.fromisoformat(data["date"])
+                if (date.today() - saved).days <= 5:
+                    return data
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _save_state(result: RegimeResult) -> None:
+        try:
+            os.makedirs(os.path.dirname(_REGIME_STATE_FILE), exist_ok=True)
+            from datetime import date
+            with open(_REGIME_STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump({
+                    "regime": result.regime,
+                    "confidence": result.confidence,
+                    "date": date.today().isoformat(),
+                }, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.debug("[RegimeDetector] 保存状态失败: %s", e)
+
     @staticmethod
     def _sma(arr: np.ndarray, window: int) -> np.ndarray:
         if len(arr) < window:
@@ -229,7 +344,7 @@ class DynamicWeightAdjuster:
                 multiplier = REGIME_DAMPEN
 
             if not sig.triggered:
-                multiplier *= 0.3
+                multiplier *= 0.1
 
             effective[name] = round(base * multiplier, 3)
 

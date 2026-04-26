@@ -68,6 +68,11 @@ class StrategySignalExtractor:
         signals.append(self._emotion_cycle(df, realtime))
         signals.append(self._one_yang_three_yin(df, realtime))
         signals.append(self._risk_filter(df, realtime))
+        signals.append(self._volume_price_divergence(df, realtime))
+        signals.append(self._volume_surge_reversal(df, realtime))
+        signals.append(self._alpha101_001_signal(df, realtime))
+        signals.append(self._alpha101_006_signal(df, realtime))
+        signals.append(self._alpha101_053_signal(df, realtime))
 
         return signals
 
@@ -100,11 +105,23 @@ class StrategySignalExtractor:
     def _calc_rsi(self, series: np.ndarray, period: int = 14) -> float:
         if len(series) < period + 1:
             return 50.0
-        delta = np.diff(series[-(period + 1):])
+        delta = np.diff(series)
         gain = np.where(delta > 0, delta, 0.0)
         loss = np.where(delta < 0, -delta, 0.0)
-        avg_gain = np.mean(gain)
-        avg_loss = np.mean(loss)
+        if len(gain) < period:
+            return 50.0
+        avg_gain = float(np.mean(gain[:period]))
+        avg_loss = float(np.mean(loss[:period]))
+        if avg_loss == 0 and avg_gain == 0:
+            return 50.0
+        if avg_loss == 0:
+            return 100.0
+        if len(gain) > period:
+            alpha = 1.0 / period
+            seeded_gain = pd.Series(np.concatenate([[avg_gain], gain[period:]]))
+            seeded_loss = pd.Series(np.concatenate([[avg_loss], loss[period:]]))
+            avg_gain = float(seeded_gain.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
+            avg_loss = float(seeded_loss.ewm(alpha=alpha, adjust=False).mean().iloc[-1])
         if avg_loss == 0:
             return 100.0
         rs = avg_gain / avg_loss
@@ -162,9 +179,6 @@ class StrategySignalExtractor:
         if cur > m5:
             score += 15
             details["above_ma5"] = True
-        if cur > m60:
-            score += 15
-            details["above_ma60"] = True
 
         if score >= 40:
             triggered = True
@@ -191,9 +205,6 @@ class StrategySignalExtractor:
                 score = 80
                 triggered = True
                 details["cross"] = "ma5_ma10_golden"
-            elif curr_diff > 0:
-                score = 30
-                details["status"] = "ma5_above_ma10"
 
         if len(ma10) >= 2 and len(ma20) >= 2:
             prev_diff = ma10[-2] - ma20[-2]
@@ -251,10 +262,8 @@ class StrategySignalExtractor:
         details: Dict[str, Any] = {}
 
         if dif > dea and bar > 0:
-            score += 30
             details["macd_status"] = "bullish"
         if dif > 0 and dea > 0:
-            score += 20
             details["above_zero"] = True
 
         if len(close) >= 40:
@@ -303,16 +312,9 @@ class StrategySignalExtractor:
             details["signal"] = "oversold"
         elif rsi12 < 40:
             score = 50
-            details["signal"] = "weak"
-        elif 40 <= rsi12 <= 60:
-            score = 30
-            details["signal"] = "neutral"
-        elif 60 < rsi12 <= 70:
-            score = 40
-            details["signal"] = "strong"
-        elif rsi12 > 70:
-            score = 20
             triggered = True
+            details["signal"] = "weak"
+        elif rsi12 > 70:
             details["signal"] = "overbought_caution"
 
         if rsi6 < 30 and rsi12 < 40:
@@ -345,14 +347,9 @@ class StrategySignalExtractor:
             triggered = True
             details["signal"] = "near_lower_band"
         elif cur >= upper:
-            score = 15
             details["signal"] = "above_upper_band"
         elif cur >= upper - (upper - mid) * 0.3:
-            score = 25
             details["signal"] = "near_upper_band"
-        else:
-            score = 40
-            details["signal"] = "within_band"
 
         return StrategySignal("bollinger_reversion", "布林回归", "reversal", score, triggered, details=details)
 
@@ -377,7 +374,7 @@ class StrategySignalExtractor:
         details["vol_ratio"] = round(vol_ratio, 2)
 
         if vol_ratio < 0.7:
-            score += 40
+            score += 25
             details["shrink"] = True
 
         if not np.isnan(ma5[-1]) and not np.isnan(ma10[-1]):
@@ -390,7 +387,7 @@ class StrategySignalExtractor:
 
         if len(ma5) >= 2 and not np.isnan(ma5[-1]) and not np.isnan(ma10[-1]):
             if ma5[-1] > ma10[-1]:
-                score += 20
+                score += 10
                 details["uptrend"] = True
 
         if score >= 50:
@@ -418,7 +415,7 @@ class StrategySignalExtractor:
         details["high_20d"] = round(high_20, 2)
 
         if vol_ratio >= 1.5:
-            score += 40
+            score += 20
             details["volume_surge"] = True
 
         if cur > high_20 and high_20 > 0:
@@ -448,9 +445,11 @@ class StrategySignalExtractor:
 
         limit_up_found = False
         for i in range(max(0, len(pct_changes) - 5), len(pct_changes)):
-            if pct_changes[i] >= 9.5:
+            threshold = self._limit_up_threshold(close, i)
+            if pct_changes[i] >= threshold:
                 limit_up_found = True
                 details["limit_up_day"] = i - len(pct_changes)
+                details["limit_up_threshold"] = threshold
                 break
 
         if limit_up_found:
@@ -463,10 +462,8 @@ class StrategySignalExtractor:
                     triggered = True
                     details["pullback_to_ma5"] = True
                 elif pullback_pct < -3:
-                    score = 30
                     details["deep_pullback"] = True
                 else:
-                    score = 40
                     details["above_ma5"] = True
 
         return StrategySignal("limit_up_pullback", "涨停回踩", "trend", score, triggered, details=details)
@@ -507,11 +504,13 @@ class StrategySignalExtractor:
         triggered = False
         details: Dict[str, Any] = {}
 
-        recent = close[-20:]
+        lookback = min(20, len(low))
+        recent_low = low[-lookback:]
+        recent_close = close[-lookback:]
         mins = []
-        for i in range(1, len(recent) - 1):
-            if recent[i] < recent[i - 1] and recent[i] < recent[i + 1]:
-                mins.append((i, recent[i]))
+        for i in range(1, len(recent_low) - 1):
+            if recent_low[i] < recent_low[i - 1] and recent_low[i] < recent_low[i + 1]:
+                mins.append((i, recent_low[i]))
 
         if len(mins) >= 2:
             lo1, lo2 = mins[-2], mins[-1]
@@ -581,13 +580,7 @@ class StrategySignalExtractor:
             triggered = True
             details["signal"] = "breakout_long"
         elif cur < low_20:
-            score = 20
             details["signal"] = "breakdown_short"
-        else:
-            position = (cur - low_20) / (high_20 - low_20) if high_20 != low_20 else 0.5
-            score = position * 50
-            details["signal"] = "within_range"
-            details["position"] = round(position, 2)
 
         return StrategySignal("turtle_trading", "海龟交易", "framework", score, triggered, details=details)
 
@@ -608,6 +601,15 @@ class StrategySignalExtractor:
         details["box_range_pct"] = round(box_range, 2)
 
         if box_range < 8:
+            ma5 = self._calc_sma(close, 5)
+            ma20 = self._calc_sma(close, 20)
+            if len(ma5) >= 2 and len(ma20) >= 2 and not np.isnan(ma5[-1]) and not np.isnan(ma20[-1]):
+                ma5_slope = (ma5[-1] - ma5[-5]) / ma5[-5] * 100 if len(ma5) >= 5 and ma5[-5] != 0 else 0
+                ma20_slope = (ma20[-1] - ma20[-10]) / ma20[-10] * 100 if len(ma20) >= 10 and ma20[-10] != 0 else 0
+                if abs(ma5_slope) > 2 or abs(ma20_slope) > 3:
+                    details["signal"] = "trending_not_box"
+                    return StrategySignal("box_oscillation", "箱体震荡", "framework", 0, False)
+
             score = 60
             triggered = True
             details["signal"] = "in_box"
@@ -617,10 +619,12 @@ class StrategySignalExtractor:
                 score = 75
                 details["box_position"] = "near_bottom"
             elif position > 0.7:
-                score = 35
+                score = 15
                 details["box_position"] = "near_top"
+            else:
+                score = 40
+                details["box_position"] = "mid_box"
         else:
-            score = 15
             details["signal"] = "not_box"
 
         return StrategySignal("box_oscillation", "箱体震荡", "framework", score, triggered, details=details)
@@ -645,11 +649,7 @@ class StrategySignalExtractor:
             triggered = True
             details["signal"] = "oversold_reversal"
         elif ret_5d > 5 and ret_10d > 8:
-            score = 30
             details["signal"] = "overbought_reversal_risk"
-        elif -3 <= ret_5d <= 3:
-            score = 40
-            details["signal"] = "consolidation"
 
         return StrategySignal("momentum_reversal", "动量反转", "trend", score, triggered, details=details)
 
@@ -713,10 +713,8 @@ class StrategySignalExtractor:
                 triggered = True
                 details["signal"] = "uptrend_pivots"
             elif pivot_highs[-1][1] < pivot_highs[-2][1] and pivot_lows[-1][1] < pivot_lows[-2][1]:
-                score = 20
                 details["signal"] = "downtrend_pivots"
             else:
-                score = 40
                 details["signal"] = "consolidation_pivots"
 
         return StrategySignal("chan_theory", "缠论", "framework", score, triggered, details=details)
@@ -750,12 +748,6 @@ class StrategySignalExtractor:
                     score = 70
                     triggered = True
                     details["signal"] = "wave3_early"
-                elif 0.38 <= wave_progress < 0.62:
-                    score = 50
-                    details["signal"] = "wave3_mid"
-                else:
-                    score = 25
-                    details["signal"] = "wave5_late"
 
         return StrategySignal("wave_theory", "波浪理论", "framework", score, triggered, details=details)
 
@@ -788,11 +780,7 @@ class StrategySignalExtractor:
             triggered = True
             details["signal"] = "fear_phase"
         elif rsi > 65 and ret_5d > 5:
-            score = 25
             details["signal"] = "greed_phase"
-        elif 40 <= rsi <= 60:
-            score = 45
-            details["signal"] = "neutral_phase"
 
         return StrategySignal("emotion_cycle", "情绪周期", "framework", score, triggered, details=details)
 
@@ -825,26 +813,30 @@ class StrategySignalExtractor:
     def _risk_filter(self, df: pd.DataFrame, rt: Optional[Dict]) -> StrategySignal:
         close = self._safe_close(df)
         if len(close) < 5:
-            return StrategySignal("risk_filter", "风险过滤", "framework", 50, True)
+            return StrategySignal("risk_filter", "风险过滤", "framework", 0, False)
 
-        score = 50.0
-        triggered = True
+        score = 0.0
+        triggered = False
         details: Dict[str, Any] = {}
 
         ret_5d = (close[-1] - close[-6]) / close[-6] * 100 if len(close) >= 6 else 0
         if ret_5d > 15:
             score -= 30
+            triggered = True
             details["chase_risk"] = True
         elif ret_5d > 10:
             score -= 15
+            triggered = True
             details["high_momentum_risk"] = True
 
         rsi = self._calc_rsi(close, 14)
         if rsi > 80:
             score -= 20
+            triggered = True
             details["extreme_overbought"] = True
         elif rsi > 70:
             score -= 10
+            triggered = True
             details["overbought"] = True
 
         ma5 = self._calc_sma(close, 5)
@@ -852,12 +844,228 @@ class StrategySignalExtractor:
             bias = (close[-1] - ma5[-1]) / ma5[-1] * 100
             if bias > 5:
                 score -= 25
+                triggered = True
                 details["high_bias_risk"] = True
                 details["bias_ma5"] = round(bias, 2)
             elif bias > 3:
                 score -= 10
+                triggered = True
                 details["moderate_bias"] = True
 
         score = max(score, 0)
 
+        if score <= 0:
+            triggered = False
+
         return StrategySignal("risk_filter", "风险过滤", "framework", score, triggered, details=details)
+
+    def _volume_price_divergence(self, df: pd.DataFrame, rt: Optional[Dict]) -> StrategySignal:
+        close = self._safe_close(df)
+        vol = self._safe_volume(df)
+        if len(close) < 20 or len(vol) < 20:
+            return StrategySignal("volume_price_divergence", "量价背离", "volume_price", 0, False)
+
+        score = 0.0
+        triggered = False
+        details: Dict[str, Any] = {}
+
+        if len(close) >= 10:
+            recent_close = close[-10:]
+            recent_vol = vol[-10:]
+            price_trend = np.polyfit(np.arange(len(recent_close)), recent_close, 1)[0]
+            vol_trend = np.polyfit(np.arange(len(recent_vol)), recent_vol, 1)[0]
+
+            price_direction = 1 if price_trend > 0 else -1
+            vol_direction = 1 if vol_trend > 0 else -1
+
+            if price_direction != vol_direction:
+                if price_direction > 0 and vol_direction < 0:
+                    score = 65
+                    triggered = True
+                    details["divergence"] = "price_up_vol_down"
+                    details["signal"] = "bearish_divergence"
+                elif price_direction < 0 and vol_direction > 0:
+                    score = 70
+                    triggered = True
+                    details["divergence"] = "price_down_vol_up"
+                    details["signal"] = "bullish_accumulation"
+
+        if len(close) >= 5:
+            price_chg_5d = (close[-1] - close[-5]) / close[-5] * 100 if close[-5] > 0 else 0
+            vol_avg_5d = np.mean(vol[-5:])
+            vol_avg_prev = np.mean(vol[-10:-5]) if len(vol) >= 10 else vol_avg_5d
+            vol_chg = (vol_avg_5d - vol_avg_prev) / vol_avg_prev * 100 if vol_avg_prev > 0 else 0
+
+            if price_chg_5d > 3 and vol_chg < -20:
+                score = min(score + 15, 100)
+                details["price_up_vol_shrink"] = True
+            elif price_chg_5d < -3 and vol_chg > 30:
+                score = min(score + 15, 100)
+                details["price_down_vol_surge"] = True
+
+        return StrategySignal("volume_price_divergence", "量价背离", "volume_price",
+                              min(score, 100), triggered, details=details)
+
+    def _volume_surge_reversal(self, df: pd.DataFrame, rt: Optional[Dict]) -> StrategySignal:
+        close = self._safe_close(df)
+        vol = self._safe_volume(df)
+        if len(close) < 20 or len(vol) < 20:
+            return StrategySignal("volume_surge_reversal", "放量反转", "volume_price", 0, False)
+
+        score = 0.0
+        triggered = False
+        details: Dict[str, Any] = {}
+
+        avg_vol_20 = float(np.mean(vol[-21:-1])) if len(vol) >= 21 else 1.0
+        today_vol = float(vol[-1])
+        vol_ratio = today_vol / avg_vol_20 if avg_vol_20 > 0 else 1.0
+        details["vol_ratio"] = round(vol_ratio, 2)
+
+        open_ = self._safe_open(df)
+        if len(open_) > 0 and len(close) > 0:
+            body = close[-1] - open_[-1]
+            body_pct = body / open_[-1] * 100 if open_[-1] > 0 else 0
+
+            if vol_ratio >= 2.0:
+                if body_pct > 2.0:
+                    score = 75
+                    triggered = True
+                    details["signal"] = "volume_surge_bullish"
+                    details["body_pct"] = round(body_pct, 2)
+                elif body_pct < -2.0:
+                    score = 20
+                    details["signal"] = "volume_surge_bearish"
+                    details["body_pct"] = round(body_pct, 2)
+                else:
+                    score = 40
+                    triggered = True
+                    details["signal"] = "volume_surge_indecision"
+
+            if len(close) >= 5:
+                ret_5d = (close[-1] - close[-5]) / close[-5] * 100 if close[-5] > 0 else 0
+                if ret_5d < -8 and vol_ratio >= 2.0 and body_pct > 1.0:
+                    score = min(score + 20, 100)
+                    triggered = True
+                    details["oversold_volume_reversal"] = True
+
+        return StrategySignal("volume_surge_reversal", "放量反转", "volume_price",
+                              min(score, 100), triggered, details=details)
+
+    def _alpha101_001_signal(self, df: pd.DataFrame, rt: Optional[Dict]) -> StrategySignal:
+        close = self._safe_close(df)
+        open_ = self._safe_open(df)
+        high = self._safe_high(df)
+        low = self._safe_low(df)
+        if len(close) < 10:
+            return StrategySignal("alpha101_001", "Alpha#1", "alpha101", 0, False)
+
+        score = 0.0
+        triggered = False
+        details: Dict[str, Any] = {}
+
+        inner = high - low
+        denom = close - open_
+        with np.errstate(divide='ignore', invalid='ignore'):
+            raw = np.where(
+                (inner > 0) & (denom != 0),
+                inner / denom,
+                0.0,
+            )
+        raw = np.where(np.isinf(raw), 0.0, raw)
+        raw = np.nan_to_num(raw, nan=0.0)
+
+        if len(raw) >= 6:
+            ma6 = np.convolve(raw[-6:], np.ones(6) / 6, mode='valid')[-1]
+            details["alpha001_ma6"] = round(float(ma6), 4)
+
+            if ma6 < -1.5:
+                score = 70
+                triggered = True
+                details["signal"] = "alpha001_bullish"
+            elif ma6 > 1.5:
+                score = 25
+                details["signal"] = "alpha001_bearish"
+            else:
+                score = 40
+                details["signal"] = "alpha001_neutral"
+
+        return StrategySignal("alpha101_001", "Alpha#1", "alpha101",
+                              min(score, 100), triggered, details=details)
+
+    def _alpha101_006_signal(self, df: pd.DataFrame, rt: Optional[Dict]) -> StrategySignal:
+        close = self._safe_close(df)
+        open_ = self._safe_open(df)
+        vol = self._safe_volume(df)
+        if len(close) < 10:
+            return StrategySignal("alpha101_006", "Alpha#6", "alpha101", 0, False)
+
+        score = 0.0
+        triggered = False
+        details: Dict[str, Any] = {}
+
+        co = close - open_
+        sign_co = np.sign(co)
+        vol_signed = vol * sign_co
+
+        if len(vol_signed) >= 6:
+            recent_sum = -np.sum(vol_signed[-6:])
+            avg_vol = np.mean(vol[-6:]) if np.mean(vol[-6:]) > 0 else 1.0
+            normalized = recent_sum / avg_vol
+            details["alpha006_normalized"] = round(float(normalized), 4)
+
+            if normalized > 2.0:
+                score = 65
+                triggered = True
+                details["signal"] = "alpha006_bullish"
+            elif normalized < -2.0:
+                score = 25
+                details["signal"] = "alpha006_bearish"
+            else:
+                score = 40
+                details["signal"] = "alpha006_neutral"
+
+        return StrategySignal("alpha101_006", "Alpha#6", "alpha101",
+                              min(score, 100), triggered, details=details)
+
+    def _alpha101_053_signal(self, df: pd.DataFrame, rt: Optional[Dict]) -> StrategySignal:
+        close = self._safe_close(df)
+        low = self._safe_low(df)
+        high = self._safe_high(df)
+        if len(close) < 15:
+            return StrategySignal("alpha101_053", "Alpha#53", "alpha101", 0, False)
+
+        score = 0.0
+        triggered = False
+        details: Dict[str, Any] = {}
+
+        window = min(13, len(close) - 1)
+        x = close[-1] - np.min(low[-window:])
+        y = np.max(high[-window:]) - np.min(low[-window:])
+        alpha_val = -x / y if y > 0 else 0.0
+        details["alpha053_value"] = round(float(alpha_val), 4)
+
+        if alpha_val < -0.7:
+            score = 70
+            triggered = True
+            details["signal"] = "alpha053_near_high"
+        elif alpha_val > -0.3:
+            score = 25
+            details["signal"] = "alpha053_near_low"
+        else:
+            score = 45
+            details["signal"] = "alpha053_mid"
+
+        return StrategySignal("alpha101_053", "Alpha#53", "alpha101",
+                              min(score, 100), triggered, details=details)
+
+    @staticmethod
+    def _limit_up_threshold(close: np.ndarray, bar_index: int) -> float:
+        if len(close) < 3:
+            return 9.5
+        pct_changes = np.abs(np.diff(close) / close[:-1] * 100)
+        max_observed = float(np.max(pct_changes)) if len(pct_changes) > 0 else 0
+        if max_observed > 25:
+            return 29.5
+        if max_observed > 15:
+            return 19.5
+        return 9.5

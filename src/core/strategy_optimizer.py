@@ -22,16 +22,22 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-_OPTIMIZER_STATE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data", "strategy_optimizer_state.json",
-)
+def _get_data_dir() -> str:
+    from pathlib import Path
+    db_path = os.getenv("DATABASE_PATH", "./data/stock_analysis.db")
+    return str(Path(db_path).resolve().parent)
 
-_MIN_TRAIN_SAMPLES = 5
-_MIN_VAL_SAMPLES = 3
+
+_OPTIMIZER_STATE_FILE = os.path.join(_get_data_dir(), "strategy_optimizer_state.json")
+
+_MIN_TRAIN_SAMPLES = 30  # 推荐的最小训练集样本量，低于此值将触发低置信度降级
+_MIN_VAL_SAMPLES = 15  # 推荐的最小验证集样本量，低于此值将触发低置信度降级
+_ABS_MIN_TRAIN_SAMPLES = 10  # 训练集绝对最小样本量，低于此值跳过该策略优化
+_ABS_MIN_VAL_SAMPLES = 5  # 验证集绝对最小样本量，低于此值跳过整体优化
+_LOW_SAMPLE_CONFIDENCE_PENALTY = 0.5  # 低样本量时权重调整幅度的衰减系数
 _MAX_WEIGHT_RATIO = 3.0
 _REGULARIZATION_LAMBDA = 0.1
-_DEGRADATION_THRESHOLD = 0.7
+_DEGRADATION_THRESHOLD = 0.8
 
 
 @dataclass
@@ -117,11 +123,11 @@ class StrategyOptimizer:
         backtest_records: List[Dict[str, Any]],
         current_regime: str = "sideways",
     ) -> Dict[str, OptimizationResult]:
-        if len(backtest_records) < _MIN_TRAIN_SAMPLES + _MIN_VAL_SAMPLES:
+        abs_min_total = _ABS_MIN_TRAIN_SAMPLES + _ABS_MIN_VAL_SAMPLES
+        if len(backtest_records) < abs_min_total:
             logger.warning(
-                "[Optimizer] 样本不足 (%d < %d)，跳过优化",
-                len(backtest_records),
-                _MIN_TRAIN_SAMPLES + _MIN_VAL_SAMPLES,
+                "[Optimizer] 样本严重不足 (%d < %d)，跳过优化",
+                len(backtest_records), abs_min_total,
             )
             return {}
 
@@ -129,9 +135,23 @@ class StrategyOptimizer:
         train_set = backtest_records[:split_idx]
         val_set = backtest_records[split_idx:]
 
-        if len(train_set) < _MIN_TRAIN_SAMPLES or len(val_set) < _MIN_VAL_SAMPLES:
-            logger.warning("[Optimizer] 训练/验证集样本不足，跳过优化")
+        if len(train_set) < _ABS_MIN_TRAIN_SAMPLES or len(val_set) < _ABS_MIN_VAL_SAMPLES:
+            logger.warning(
+                "[Optimizer] 训练/验证集样本不足 (train=%d, val=%d)，跳过优化",
+                len(train_set), len(val_set),
+            )
             return {}
+
+        low_confidence = (
+            len(train_set) < _MIN_TRAIN_SAMPLES or len(val_set) < _MIN_VAL_SAMPLES
+        )
+        if low_confidence:
+            logger.warning(
+                "[Optimizer] 样本低于推荐量 (train=%d<%d, val=%d<%d)，降级优化 (权重调整幅度 ×%.1f)",
+                len(train_set), _MIN_TRAIN_SAMPLES,
+                len(val_set), _MIN_VAL_SAMPLES,
+                _LOW_SAMPLE_CONFIDENCE_PENALTY,
+            )
 
         train_perf = self._compute_strategy_performance(train_set)
         val_perf = self._compute_strategy_performance(val_set)
@@ -143,7 +163,7 @@ class StrategyOptimizer:
             train_p = train_perf.get(name)
             val_p = val_perf.get(name)
 
-            if train_p is None or train_p.sample_count < _MIN_TRAIN_SAMPLES:
+            if train_p is None or train_p.sample_count < _ABS_MIN_TRAIN_SAMPLES:
                 new_weights[name] = base_w
                 results[name] = OptimizationResult(
                     strategy_name=name,
@@ -156,6 +176,9 @@ class StrategyOptimizer:
 
             raw_adjustment = self._compute_weight_adjustment(train_p, base_w)
             regularized = self._apply_regularization(raw_adjustment, base_w)
+
+            if low_confidence:
+                regularized = base_w + (regularized - base_w) * _LOW_SAMPLE_CONFIDENCE_PENALTY
 
             train_wr = train_p.win_rate
             val_wr = val_p.win_rate if val_p else 0.0
@@ -176,6 +199,9 @@ class StrategyOptimizer:
                     reason = f"表现不佳 (训练胜率={train_wr:.1%})"
                 else:
                     reason = "表现中性，维持基础权重"
+
+            if low_confidence and accepted:
+                reason += " [低样本降级]"
 
             new_weights[name] = round(final_w, 3)
             results[name] = OptimizationResult(
@@ -255,11 +281,10 @@ class StrategyOptimizer:
                     (p.avg_score_when_triggered * (p.triggered_count - 1) + s.get("score", 0))
                     / p.triggered_count
                 )
-                if is_win:
-                    p.win_rate = (
-                        (p.win_rate * (p.triggered_count - 1) + 1)
-                        / p.triggered_count
-                    )
+                p.win_rate = (
+                    (p.win_rate * (p.triggered_count - 1) + (1 if is_win else 0))
+                    / p.triggered_count
+                )
                 p.avg_return_when_triggered = (
                     (p.avg_return_when_triggered * (p.triggered_count - 1) + return_pct)
                     / p.triggered_count
@@ -458,3 +483,169 @@ class StrategyOptimizer:
         except Exception as e:
             logger.debug("[Optimizer] 获取 %s 历史数据失败: %s", code, e)
         return None
+
+    def optimize_from_ic(
+        self,
+        ic_summaries: Dict[str, Any],
+        rotation_weights: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, OptimizationResult]:
+        logger.info("[Optimizer] 开始 IC 驱动优化: %d 个因子", len(ic_summaries))
+        results: Dict[str, OptimizationResult] = {}
+        new_weights: Dict[str, float] = {}
+
+        for name, base_w in self.base_weights.items():
+            ic_info = ic_summaries.get(name)
+            if ic_info is None:
+                new_weights[name] = base_w
+                results[name] = OptimizationResult(
+                    strategy_name=name,
+                    original_weight=base_w,
+                    optimized_weight=base_w,
+                    adjustment_reason="无 IC 数据，保持基础权重",
+                    accepted=True,
+                )
+                continue
+
+            mean_ic = ic_info.get("mean_ic", 0) if isinstance(ic_info, dict) else getattr(ic_info, "mean_ic", 0)
+            icir = ic_info.get("icir", 0) if isinstance(ic_info, dict) else getattr(ic_info, "icir", 0)
+            is_effective = ic_info.get("is_effective", False) if isinstance(ic_info, dict) else getattr(ic_info, "is_effective", False)
+
+            score = 0.0
+            if is_effective:
+                score += 0.2
+            if abs(icir) > 0.5:
+                score += 0.2
+            elif abs(icir) > 0.3:
+                score += 0.1
+            elif abs(icir) < 0.1:
+                score -= 0.2
+
+            if mean_ic > 0.05:
+                score += 0.15
+            elif mean_ic < -0.03:
+                score -= 0.3
+
+            adjusted = base_w * (1 + score)
+            adjusted = max(0.1, min(adjusted, base_w * _MAX_WEIGHT_RATIO))
+            regularized = adjusted * (1 - _REGULARIZATION_LAMBDA) + base_w * _REGULARIZATION_LAMBDA
+
+            if rotation_weights and name in rotation_weights:
+                rot_w = rotation_weights[name]
+                regularized = regularized * 0.7 + rot_w * base_w * 0.3
+
+            new_weights[name] = round(regularized, 3)
+            reason = f"IC={mean_ic:.3f}, ICIR={icir:.3f}"
+            if is_effective:
+                reason += ", 因子有效"
+            else:
+                reason += ", 因子效果不显著"
+
+            results[name] = OptimizationResult(
+                strategy_name=name,
+                original_weight=base_w,
+                optimized_weight=round(regularized, 3),
+                adjustment_reason=reason,
+                accepted=is_effective or abs(icir) > 0.3,
+            )
+
+        self.state.strategy_weights = new_weights
+        self.state.last_optimization_date = date.today().isoformat()
+        self.state.optimization_count += 1
+        self.state.optimization_history.append({
+            "date": self.state.last_optimization_date,
+            "method": "ic_driven",
+            "accepted_count": sum(1 for r in results.values() if r.accepted),
+            "rejected_count": sum(1 for r in results.values() if not r.accepted),
+        })
+        self.state.save()
+
+        logger.info(
+            "[Optimizer] IC 驱动优化完成: %d 接受, %d 拒绝",
+            sum(1 for r in results.values() if r.accepted),
+            sum(1 for r in results.values() if not r.accepted),
+        )
+        return results
+
+    def optimize_from_validation(
+        self,
+        validation_reports: Dict[str, Any],
+    ) -> Dict[str, OptimizationResult]:
+        logger.info("[Optimizer] 开始验证驱动优化: %d 个因子", len(validation_reports))
+        results: Dict[str, OptimizationResult] = {}
+        new_weights: Dict[str, float] = {}
+
+        for name, base_w in self.base_weights.items():
+            report = validation_reports.get(name)
+            if report is None:
+                new_weights[name] = base_w
+                results[name] = OptimizationResult(
+                    strategy_name=name,
+                    original_weight=base_w,
+                    optimized_weight=base_w,
+                    adjustment_reason="无验证报告，保持基础权重",
+                    accepted=True,
+                )
+                continue
+
+            is_valid = report.get("is_valid", True) if isinstance(report, dict) else getattr(report, "is_valid", True)
+            verdict = report.get("overall_verdict", "") if isinstance(report, dict) else getattr(report, "overall_verdict", "")
+
+            pbo_val = report.get("pbo_result", {}) if isinstance(report, dict) else {}
+            if hasattr(report, "pbo_result") and report.pbo_result:
+                pbo_val = {"pbo": report.pbo_result.pbo}
+
+            dsr_val = report.get("dsr_result", {}) if isinstance(report, dict) else {}
+            if hasattr(report, "dsr_result") and report.dsr_result:
+                dsr_val = {"p_value": report.dsr_result.p_value}
+
+            if not is_valid:
+                adjusted = base_w * 0.3
+                reason = f"验证未通过: {verdict}"
+                accepted = False
+            else:
+                score = 0.0
+                pbo = pbo_val.get("pbo", 0) if isinstance(pbo_val, dict) else 0
+                if pbo < 0.3:
+                    score += 0.2
+                elif pbo > 0.5:
+                    score -= 0.2
+
+                dsr_p = dsr_val.get("p_value", 1) if isinstance(dsr_val, dict) else 1
+                if dsr_p < 0.05:
+                    score += 0.15
+                elif dsr_p > 0.2:
+                    score -= 0.1
+
+                adjusted = base_w * (1 + score)
+                adjusted = max(0.1, min(adjusted, base_w * _MAX_WEIGHT_RATIO))
+                regularized = adjusted * (1 - _REGULARIZATION_LAMBDA) + base_w * _REGULARIZATION_LAMBDA
+                adjusted = regularized
+                reason = f"PBO={pbo:.2f}, DSR_p={dsr_p:.3f}"
+                accepted = True
+
+            new_weights[name] = round(adjusted, 3)
+            results[name] = OptimizationResult(
+                strategy_name=name,
+                original_weight=base_w,
+                optimized_weight=round(adjusted, 3),
+                adjustment_reason=reason,
+                accepted=accepted,
+            )
+
+        self.state.strategy_weights = new_weights
+        self.state.last_optimization_date = date.today().isoformat()
+        self.state.optimization_count += 1
+        self.state.optimization_history.append({
+            "date": self.state.last_optimization_date,
+            "method": "validation_driven",
+            "accepted_count": sum(1 for r in results.values() if r.accepted),
+            "rejected_count": sum(1 for r in results.values() if not r.accepted),
+        })
+        self.state.save()
+
+        logger.info(
+            "[Optimizer] 验证驱动优化完成: %d 接受, %d 拒绝",
+            sum(1 for r in results.values() if r.accepted),
+            sum(1 for r in results.values() if not r.accepted),
+        )
+        return results

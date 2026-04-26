@@ -156,7 +156,8 @@ class YfinanceFetcher(BaseFetcher):
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从 Yahoo Finance 获取原始数据
 
@@ -169,19 +170,19 @@ class YfinanceFetcher(BaseFetcher):
         """
         import yfinance as yf
 
-        # 转换代码格式
         yf_code = self._convert_stock_code(stock_code)
 
-        logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date})")
+        auto_adjust = (adjust != "none")
+
+        logger.debug(f"调用 yfinance.download({yf_code}, {start_date}, {end_date}, auto_adjust={auto_adjust})")
 
         try:
-            # 使用 yfinance 下载数据
             df = yf.download(
                 tickers=yf_code,
                 start=start_date,
                 end=end_date,
-                progress=False,  # 禁止进度条
-                auto_adjust=True,  # 自动调整价格（复权）
+                progress=False,
+                auto_adjust=auto_adjust,
                 multi_level_index=True
             )
 

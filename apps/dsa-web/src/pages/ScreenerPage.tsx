@@ -1,5 +1,5 @@
 import type React from 'react';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Crosshair,
   Eye,
@@ -8,6 +8,10 @@ import {
   RefreshCw,
   Play,
   BarChart3,
+  Database,
+  X,
+  Timer,
+  Layers,
   Clock,
   Target,
   CheckCircle2,
@@ -17,6 +21,7 @@ import {
 import { screenerApi } from '../api/screener';
 import { getParsedApiError } from '../api/error';
 import type { ParsedApiError } from '../api/error';
+import type { PoolStatusResponse, PoolSummaryResponse } from '../types/screener';
 import {
   ApiErrorAlert,
   Badge,
@@ -130,6 +135,12 @@ const ScreenerPage: React.FC = () => {
   // Backtest feedback
   const [isFeedbacking, setIsFeedbacking] = useState(false);
 
+  const [poolStatus, setPoolStatus] = useState<PoolStatusResponse | null>(null);
+  const [poolSummary, setPoolSummary] = useState<PoolSummaryResponse | null>(null);
+  const [isInitingPool, setIsInitingPool] = useState(false);
+  const [showPoolPanel, setShowPoolPanel] = useState(false);
+  const poolPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const fetchTodayPicks = useCallback(async () => {
     setIsLoadingPicks(true);
     try {
@@ -186,6 +197,68 @@ const ScreenerPage: React.FC = () => {
     }
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const fetchPoolStatus = useCallback(async () => {
+    try {
+      const data = await screenerApi.getPoolStatus();
+      setPoolStatus(data);
+      if (data.status === 'completed' && !poolSummary) {
+        const summary = await screenerApi.getPoolSummary();
+        setPoolSummary(summary);
+      }
+    } catch (err) {
+      console.error('Failed to fetch pool status:', err);
+    }
+  }, [poolSummary]);
+
+  const startPoolPolling = useCallback(() => {
+    if (poolPollRef.current) return;
+    let pollCount = 0;
+    const MAX_POLLS = 1200;
+    poolPollRef.current = setInterval(async () => {
+      if (document.visibilityState !== 'visible') return;
+      pollCount++;
+      if (pollCount > MAX_POLLS) {
+        if (poolPollRef.current) {
+          clearInterval(poolPollRef.current);
+          poolPollRef.current = null;
+        }
+        return;
+      }
+      try {
+        const data = await screenerApi.getPoolStatus();
+        setPoolStatus(data);
+        if (data.status !== 'running') {
+          if (poolPollRef.current) {
+            clearInterval(poolPollRef.current);
+            poolPollRef.current = null;
+          }
+          if (data.status === 'completed') {
+            const summary = await screenerApi.getPoolSummary();
+            setPoolSummary(summary);
+          }
+        }
+      } catch (err) {
+        console.error('Pool status poll failed:', err);
+      }
+    }, 3000);
+  }, []);
+
+  useEffect(() => {
+    fetchPoolStatus();
+    return () => {
+      if (poolPollRef.current) {
+        clearInterval(poolPollRef.current);
+        poolPollRef.current = null;
+      }
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (poolStatus?.status === 'running') {
+      startPoolPolling();
+    }
+  }, [poolStatus?.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleRun = async () => {
     setIsRunning(true);
     setRunError(null);
@@ -233,6 +306,41 @@ const ScreenerPage: React.FC = () => {
     }
   };
 
+  const handleInitPool = async () => {
+    setIsInitingPool(true);
+    try {
+      await screenerApi.initPool(45);
+      await fetchPoolStatus();
+      startPoolPolling();
+    } catch (err) {
+      setPageError(getParsedApiError(err));
+    } finally {
+      setIsInitingPool(false);
+    }
+  };
+
+  const handleCancelPool = async () => {
+    try {
+      await screenerApi.cancelPoolInit();
+      await fetchPoolStatus();
+    } catch (err) {
+      setPageError(getParsedApiError(err));
+    }
+  };
+
+  const formatEta = (seconds: number): string => {
+    if (seconds <= 0) return '计算中...';
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    if (mins > 60) {
+      const hours = Math.floor(mins / 60);
+      const remainMins = mins % 60;
+      return `约 ${hours} 小时 ${remainMins} 分`;
+    }
+    if (mins > 0) return `约 ${mins} 分 ${secs} 秒`;
+    return `${secs} 秒`;
+  };
+
   const renderTodayTab = () => {
     if (isLoadingPicks) {
       return (
@@ -259,14 +367,16 @@ const ScreenerPage: React.FC = () => {
       );
     }
 
+    const sortedPicks = [...todayPicks].sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+
     return (
       <div className="animate-fade-in">
         <div className="mb-3 flex items-center gap-3 flex-wrap">
           <span className="label-uppercase">选股日期</span>
           <span className="text-sm font-mono text-foreground">{todayDate}</span>
-          <span className="text-xs text-secondary-text">共 {todayPicks.length} 只</span>
-          {todayPicks.length > 0 && (() => {
-            const first = todayPicks[0] as unknown as Record<string, unknown>;
+          <span className="text-xs text-secondary-text">共 {sortedPicks.length} 只</span>
+          {sortedPicks.length > 0 && (() => {
+            const first = sortedPicks[0] as unknown as Record<string, unknown>;
             const regime = first.marketRegime as string | undefined;
             const regimeLabel = first.marketRegimeLabel as string | undefined;
             if (regime) {
@@ -330,25 +440,28 @@ const ScreenerPage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {todayPicks.map((item) => {
+              {sortedPicks.map((item, idx) => {
                 const itemAny = item as unknown as Record<string, unknown>;
                 const ss = itemAny.strategyScores as StrategyScores | undefined;
                 const triggered = ss?.triggeredStrategies ?? [];
                 const qualityTier = itemAny.qualityTier as string | undefined;
                 const qualityTierLabel = itemAny.qualityTierLabel as string | undefined;
-                const dataFetchFailed = itemAny.dataFetchFailed as boolean | undefined;
+                const dataFetchFailed = itemAny.dataFetchFailed === true;
+                const hasStrategyData = ss != null;
+                const displayRank = idx + 1;
+                const rankColor = displayRank <= 3 ? 'bg-cyan/20 text-cyan border border-cyan/30' : 'bg-white/5 text-secondary-text border border-white/10';
                 return (
-                  <tr key={item.id} className={`screener-table-row${dataFetchFailed ? ' opacity-70' : ''}`}>
+                  <tr key={item.id} className={`screener-table-row${dataFetchFailed && hasStrategyData ? ' opacity-70' : ''}`}>
                     <td className="screener-table-cell">
-                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-cyan/10 text-xs font-bold text-cyan">
-                        {item.rank}
+                      <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${rankColor}`}>
+                        {displayRank}
                       </span>
                     </td>
                     <td className="screener-table-cell">
                       <div>
                         <span className="font-medium text-foreground">{item.name || item.code}</span>
                         <span className="ml-2 text-xs text-secondary-text">{item.code}</span>
-                        {dataFetchFailed && (
+                        {dataFetchFailed && hasStrategyData && (
                           <Tooltip content={(itemAny.dataFetchReason as string) || '历史数据获取失败'}>
                             <AlertTriangle className="ml-1 inline h-3 w-3 text-warning" />
                           </Tooltip>
@@ -374,7 +487,7 @@ const ScreenerPage: React.FC = () => {
                             </Badge>
                           </Tooltip>
                         )) : (
-                          <span className="text-xs text-muted-text">{dataFetchFailed ? '数据缺失' : '--'}</span>
+                          <span className="text-xs text-muted-text">{dataFetchFailed && hasStrategyData ? '数据缺失' : '--'}</span>
                         )}
                         {triggered.length > 3 && (
                           <Tooltip content={triggered.slice(3).map((s) => s.displayName).join(', ')}>
@@ -480,11 +593,14 @@ const ScreenerPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {watching.map((item) => (
+                  {watching.map((item, idx) => {
+                    const watchRank = idx + 1;
+                    const rankColor = watchRank <= 3 ? 'bg-cyan/20 text-cyan border border-cyan/30' : 'bg-white/5 text-secondary-text border border-white/10';
+                    return (
                     <tr key={item.id} className="screener-table-row">
                       <td className="screener-table-cell">
-                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-cyan/10 text-xs font-bold text-cyan">
-                          {item.rank}
+                        <span className={`inline-flex h-7 w-7 items-center justify-center rounded-lg text-xs font-bold ${rankColor}`}>
+                          {watchRank}
                         </span>
                       </td>
                       <td className="screener-table-cell">
@@ -531,7 +647,7 @@ const ScreenerPage: React.FC = () => {
                         )}
                       </td>
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
             </div>
@@ -794,6 +910,90 @@ const ScreenerPage: React.FC = () => {
               </>
             )}
           </button>
+          <div className="flex-1" />
+          <div className="flex items-center gap-2">
+            {!poolStatus && (
+              <span className="flex items-center gap-1.5 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-muted-text">
+                <Database className="h-3 w-3" />
+                加载中...
+              </span>
+            )}
+            {poolStatus?.status === 'running' && (
+              <button
+                type="button"
+                onClick={() => setShowPoolPanel(!showPoolPanel)}
+                className="flex items-center gap-1.5 rounded-xl border border-cyan/30 bg-cyan/10 px-3 py-2 text-xs text-cyan transition-all hover:bg-cyan/20"
+              >
+                <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                初始化中 {poolStatus.progressPct.toFixed(0)}%
+              </button>
+            )}
+            {poolStatus?.status === 'completed' && poolStatus.daysRemaining != null && poolStatus.daysRemaining > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setShowPoolPanel(!showPoolPanel)}
+                  className={"flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs transition-all hover:bg-white/5 " + (poolStatus.daysRemaining <= 7 ? "border-warning/30 bg-warning/10 text-warning" : "border-white/10 bg-white/5 text-secondary-text")}
+                >
+                  <Timer className="h-3 w-3" />
+                  剩余 {poolStatus.daysRemaining} 天
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowPoolPanel(!showPoolPanel)}
+                  className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-secondary-text transition-all hover:bg-white/10 hover:text-foreground"
+                >
+                  <Layers className="h-3 w-3" />
+                  股票池详情
+                </button>
+              </>
+            )}
+            {poolStatus?.status === 'completed' && poolStatus.daysRemaining != null && poolStatus.daysRemaining <= 0 && (
+              <button
+                type="button"
+                onClick={handleInitPool}
+                disabled={isInitingPool}
+                className="flex items-center gap-1.5 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning transition-all hover:bg-warning/20"
+              >
+                <Database className="h-3 w-3" />
+                股票池已过期，点击重新初始化
+              </button>
+            )}
+            {poolStatus?.status === 'completed' && poolStatus.daysRemaining == null && (
+              <button
+                type="button"
+                onClick={() => setShowPoolPanel(!showPoolPanel)}
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-secondary-text transition-all hover:bg-white/10 hover:text-foreground"
+              >
+                <Layers className="h-3 w-3" />
+                股票池详情
+              </button>
+            )}
+            {!poolStatus?.hasPool && poolStatus?.status !== 'running' && poolStatus?.status !== 'completed' && (
+              <button
+                type="button"
+                onClick={handleInitPool}
+                disabled={isInitingPool}
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-secondary-text transition-all hover:bg-white/10 hover:text-foreground disabled:opacity-50"
+              >
+                <Database className="h-3 w-3" />
+                {isInitingPool ? '启动中...' : '初始化股票池'}
+              </button>
+            )}
+            {poolStatus?.hasPool && poolStatus?.status !== 'running' && poolStatus?.status !== 'completed' && (
+              <button
+                type="button"
+                onClick={() => setShowPoolPanel(!showPoolPanel)}
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-secondary-text transition-all hover:bg-white/10 hover:text-foreground"
+              >
+                <Layers className="h-3 w-3" />
+                股票池
+              </button>
+            )}
+          </div>
         </div>
         {runError && (
           <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
@@ -801,6 +1001,156 @@ const ScreenerPage: React.FC = () => {
         <p className="mt-2 text-xs text-muted-text">
           从全市场A股中多因子筛选优质标的，自动跟踪观察池收益并支持回测验证
         </p>
+
+        {showPoolPanel && poolStatus && (
+          <div className="mt-3 rounded-xl border border-white/10 bg-elevated/50 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Database className="h-4 w-4 text-cyan" />
+                <span className="text-sm font-medium text-foreground">股票池管理</span>
+                {poolStatus.poolVersion && (
+                  <span className="text-xs text-secondary-text font-mono">{poolStatus.poolVersion}</span>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowPoolPanel(false)}
+                className="rounded-lg p-1 text-secondary-text hover:text-foreground hover:bg-white/5 transition-all"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            {poolStatus.status === 'running' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-secondary-text">初始化进度</span>
+                  <span className="font-mono text-cyan">{poolStatus.progressPct.toFixed(1)}%</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-white/5">
+                  <div
+                    className="h-full rounded-full bg-gradient-to-r from-cyan to-blue-500 transition-all duration-500"
+                    style={{ width: Math.min(100, poolStatus.progressPct) + '%' }}
+                  />
+                </div>
+                <div className="flex items-center justify-between text-xs text-secondary-text">
+                  <span>已扫描 {poolStatus.totalStocks} 只 | 过滤 {poolStatus.filteredStocks} | 打标 {poolStatus.taggedStocks} | 排除 {poolStatus.excludedStocks}</span>
+                  <span>预计剩余 {formatEta(poolStatus.etaSeconds)}</span>
+                </div>
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleCancelPool}
+                    className="rounded-lg border border-danger/30 bg-danger/10 px-3 py-1.5 text-xs text-danger hover:bg-danger/20 transition-all"
+                  >
+                    取消初始化
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {poolStatus.status === 'completed' && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="rounded-lg bg-white/5 p-2.5 text-center">
+                    <div className="text-lg font-mono text-foreground">{poolStatus.taggedStocks}</div>
+                    <div className="text-xs text-secondary-text">活跃股票</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-2.5 text-center">
+                    <div className="text-lg font-mono text-foreground">{poolStatus.excludedStocks}</div>
+                    <div className="text-xs text-secondary-text">已排除</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-2.5 text-center">
+                    <div className="text-lg font-mono text-foreground">{poolStatus.totalStocks}</div>
+                    <div className="text-xs text-secondary-text">总扫描</div>
+                  </div>
+                  <div className="rounded-lg bg-white/5 p-2.5 text-center">
+                    <div className={"text-lg font-mono " + (poolStatus.daysRemaining != null && poolStatus.daysRemaining <= 7 ? "text-warning" : "text-foreground")}>
+                      {poolStatus.daysRemaining ?? '--'}
+                    </div>
+                    <div className="text-xs text-secondary-text">剩余天数</div>
+                  </div>
+                </div>
+                {poolSummary && (
+                  <div className="grid grid-cols-3 gap-3 pt-1">
+                    <div>
+                      <div className="text-xs text-secondary-text mb-1.5">板块分布</div>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(poolSummary.boards).map(([board, count]) => (
+                          <span key={board} className="inline-flex items-center gap-1 rounded-md bg-cyan/10 px-2 py-0.5 text-xs text-cyan">
+                            {board} <span className="text-secondary-text">{count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-secondary-text mb-1.5">行业分布</div>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(poolSummary.industries).slice(0, 8).map(([ind, count]) => (
+                          <span key={ind} className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs text-blue-400">
+                            {ind} <span className="text-secondary-text">{count}</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-secondary-text mb-1.5">质量分布</div>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(poolSummary.qualities).map(([q, count]) => {
+                          const qLabel = q === 'premium' ? '优质' : q === 'standard' ? '标准' : '边缘';
+                          const qClass = q === 'premium' ? 'bg-success/10 text-success' : q === 'standard' ? 'bg-cyan/10 text-cyan' : 'bg-warning/10 text-warning';
+                          return (
+                            <span key={q} className={"inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs " + qClass}>
+                              {qLabel} <span className="text-secondary-text">{count}</span>
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                )}
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleInitPool}
+                    disabled={isInitingPool}
+                    className="rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5 text-xs text-cyan hover:bg-cyan/20 transition-all disabled:opacity-50"
+                  >
+                    重新初始化
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {poolStatus.status === 'failed' && (
+              <div className="space-y-2">
+                <div className="text-xs text-danger">初始化失败：{poolStatus.errorMessage || '未知错误'}</div>
+                <button
+                  type="button"
+                  onClick={handleInitPool}
+                  disabled={isInitingPool}
+                  className="rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5 text-xs text-cyan hover:bg-cyan/20 transition-all disabled:opacity-50"
+                >
+                  重新初始化
+                </button>
+              </div>
+            )}
+
+            {poolStatus.status === 'none' && (
+              <div className="space-y-2">
+                <div className="text-xs text-secondary-text">尚未初始化股票池。初始化将全量扫描A股并分类打标签，后续选股可基于标签快速筛选。</div>
+                <button
+                  type="button"
+                  onClick={handleInitPool}
+                  disabled={isInitingPool}
+                  className="rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5 text-xs text-cyan hover:bg-cyan/20 transition-all disabled:opacity-50"
+                >
+                  {isInitingPool ? '启动中...' : '开始初始化'}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </header>
 
       {/* Tab navigation */}

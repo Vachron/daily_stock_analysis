@@ -10,6 +10,11 @@ export interface ScreenerRunRequest {
   demo?: boolean;
   scanMode?: string;
   useOptimizedWeights?: boolean;
+  poolBoards?: string[];
+  poolIndustries?: string[];
+  poolQualities?: string[];
+  poolTags?: string[];
+  poolMinBaseScore?: number;
 }
 
 export interface StrategySignalDetail {
@@ -138,4 +143,56 @@ export interface ScreenerTrackingUpdateResponse {
 export interface ScreenerBacktestFeedbackResponse {
   verified: number;
   totalChecked: number;
+}
+
+export interface PoolStatusResponse {
+  hasPool: boolean;
+  status: string;
+  poolVersion?: string;
+  expiresAt?: string;
+  daysRemaining?: number;
+  totalStocks: number;
+  filteredStocks: number;
+  taggedStocks: number;
+  excludedStocks: number;
+  progressPct: number;
+  etaSeconds: number;
+  errorMessage?: string;
+}
+
+export interface PoolSummaryResponse {
+  boards: Record<string, number>;
+  industries: Record<string, number>;
+  qualities: Record<string, number>;
+  totalActive: number;
+}
+
+export interface PoolEntryItem {
+  code: string;
+  name: string;
+  board: string;
+  industry: string;
+  qualityTier: string;
+  baseScore: number;
+  tags: string[];
+  marketCap: number;
+  peRatio: number;
+  pbRatio: number;
+  price: number;
+  turnoverRate: number;
+}
+
+export interface PoolCodesResponse {
+  total: number;
+  entries: PoolEntryItem[];
+}
+
+export interface PoolInitResponse {
+  poolVersion: string;
+  message: string;
+}
+
+export interface PoolCancelResponse {
+  cancelled: boolean;
+  message: string;
 }

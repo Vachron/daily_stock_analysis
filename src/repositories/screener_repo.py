@@ -27,12 +27,21 @@ class ScreenerRepository:
 
         Uses SQLite INSERT ... ON CONFLICT DO UPDATE to avoid N+1 queries.
         The unique constraint is (screen_date, code, strategy_tag).
+        Before inserting, deletes stale watch-status records for the same
+        date+strategy_tag that are no longer in the new result set.
+        Inserts are batched to stay under SQLite's variable limit (~999).
         """
+        _BATCH_SIZE = 50
+
         if not results:
             return 0
 
         mappings = []
+        new_codes = set()
+        screen_date = results[0].screen_date
+        strategy_tag = results[0].strategy_tag
         for r in results:
+            new_codes.add(r.code)
             mappings.append({
                 'screen_date': r.screen_date,
                 'code': r.code,
@@ -50,26 +59,60 @@ class ScreenerRepository:
             })
 
         with self.db.get_session() as session:
-            stmt = sqlite_insert(ScreenerResult).values(mappings)
-            excluded = stmt.excluded
-            session.execute(
-                stmt.on_conflict_do_update(
-                    index_elements=['screen_date', 'code', 'strategy_tag'],
-                    set_={
-                        'score': excluded.score,
-                        'rank': excluded.rank,
-                        'name': func.coalesce(excluded.name, ScreenerResult.name),
-                        'price_at_screen': excluded.price_at_screen,
-                        'market_cap': excluded.market_cap,
-                        'turnover_rate': excluded.turnover_rate,
-                        'pe_ratio': excluded.pe_ratio,
-                        'pb_ratio': excluded.pb_ratio,
-                        'signals_json': excluded.signals_json,
-                        'updated_at': datetime.now(),
-                    },
-                )
-            )
-            session.commit()
+            try:
+                if new_codes and screen_date and strategy_tag:
+                    existing = session.execute(
+                        select(ScreenerResult.code).where(
+                            and_(
+                                ScreenerResult.screen_date == screen_date,
+                                ScreenerResult.strategy_tag == strategy_tag,
+                                ScreenerResult.status == 'watch',
+                            )
+                        )
+                    ).scalars().all()
+                    stale_codes = sorted(set(existing) - new_codes)
+                    all_stale = 0
+                    for i in range(0, len(stale_codes), _BATCH_SIZE):
+                        chunk = stale_codes[i:i + _BATCH_SIZE]
+                        result = session.execute(
+                            delete(ScreenerResult).where(
+                                and_(
+                                    ScreenerResult.screen_date == screen_date,
+                                    ScreenerResult.strategy_tag == strategy_tag,
+                                    ScreenerResult.status == 'watch',
+                                    ScreenerResult.code.in_(chunk),
+                                )
+                            )
+                        )
+                        all_stale += result.rowcount
+                    if all_stale > 0:
+                        logger.debug("Removed %d stale watch records for %s/%s", all_stale, screen_date, strategy_tag)
+
+                for i in range(0, len(mappings), _BATCH_SIZE):
+                    batch = mappings[i:i + _BATCH_SIZE]
+                    stmt = sqlite_insert(ScreenerResult).values(batch)
+                    excluded = stmt.excluded
+                    session.execute(
+                        stmt.on_conflict_do_update(
+                            index_elements=['screen_date', 'code', 'strategy_tag'],
+                            set_={
+                                'score': excluded.score,
+                                'rank': excluded.rank,
+                                'name': func.coalesce(excluded.name, ScreenerResult.name),
+                                'price_at_screen': excluded.price_at_screen,
+                                'market_cap': excluded.market_cap,
+                                'turnover_rate': excluded.turnover_rate,
+                                'pe_ratio': excluded.pe_ratio,
+                                'pb_ratio': excluded.pb_ratio,
+                                'signals_json': excluded.signals_json,
+                                'updated_at': datetime.now(),
+                            },
+                        )
+                    )
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
 
         return len(results)
 

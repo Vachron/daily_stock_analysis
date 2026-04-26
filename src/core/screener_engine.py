@@ -41,6 +41,11 @@ class ScreenerConfig:
     strategy_tag: str = "daily_pick"
     scan_mode: str = "quality_only"
     use_optimized_weights: bool = True
+    pool_boards: Optional[List[str]] = None
+    pool_industries: Optional[List[str]] = None
+    pool_qualities: Optional[List[str]] = None
+    pool_tags: Optional[List[str]] = None
+    pool_min_base_score: float = 0.0
 
 
 @dataclass
@@ -89,9 +94,79 @@ class ScreenerEngine:
 
     def __init__(self, config: Optional[ScreenerConfig] = None):
         self.config = config or ScreenerConfig()
+        self._data_factory = None
 
     def run(self, demo: bool = False) -> ScreenerRunResult:
         """Execute the full screening pipeline."""
+        cfg = self.config
+        use_pool = any([cfg.pool_boards, cfg.pool_industries, cfg.pool_qualities, cfg.pool_tags, cfg.pool_min_base_score > 0])
+
+        if use_pool:
+            return self._run_pool_scan(demo=demo)
+
+        if demo:
+            return self._run_full_scan(demo=True)
+
+        return self._run_full_scan()
+
+    def _run_pool_scan(self, demo: bool = False) -> ScreenerRunResult:
+        """Quick scan using the pre-built stock pool with tag filters."""
+        from src.core.stock_pool import StockPoolInitializer
+
+        cfg = self.config
+        logger.info("[Screener] 使用股票池快速扫描 (boards=%s, industries=%s, qualities=%s)...",
+                     cfg.pool_boards, cfg.pool_industries, cfg.pool_qualities)
+
+        pool = StockPoolInitializer.get_instance()
+        pool_entries = pool.get_pool_codes(
+            boards=cfg.pool_boards,
+            industries=cfg.pool_industries,
+            qualities=cfg.pool_qualities,
+            tags=cfg.pool_tags,
+            min_base_score=cfg.pool_min_base_score,
+            limit=500,
+        )
+
+        if not pool_entries:
+            logger.warning("[Screener] 股票池为空或未初始化，回退到全市场扫描")
+            return self._run_full_scan(demo=demo)
+
+        logger.info("[Screener] 股票池筛选出 %d 只股票", len(pool_entries))
+
+        regime_result = self._detect_market_regime()
+        logger.info("[Screener] 市场状态: %s (%s)", regime_result.regime, regime_result.label)
+
+        optimized_weights: Optional[Dict[str, float]] = None
+        optimized_applied = False
+        if cfg.use_optimized_weights:
+            optimized_weights = self._load_optimized_weights()
+            if optimized_weights:
+                optimized_applied = True
+
+        candidates, failures, history_cache = self._score_pool_entries(
+            pool_entries,
+            regime_result=regime_result,
+            optimized_weights=optimized_weights,
+        )
+        top = candidates[:cfg.top_n]
+
+        self._persist_top_daily_data(top, history_cache)
+
+        logger.info("[Screener] 股票池快速扫描选出 Top %d 只股票", len(top))
+        for c in top:
+            logger.info("  #%d %s(%s) 评分=%.2f", c.rank, c.name, c.code, c.score)
+
+        return ScreenerRunResult(
+            candidates=top,
+            data_failures=failures,
+            quality_summary={},
+            market_regime=regime_result.regime,
+            market_regime_label=regime_result.label,
+            optimized_weights_applied=optimized_applied,
+        )
+
+    def _run_full_scan(self, demo: bool = False) -> ScreenerRunResult:
+        """Full-market scan (original pipeline)."""
         logger.info("[Screener] 开始全市场选股扫描 (模式=%s)...", self.config.scan_mode)
 
         if demo:
@@ -144,13 +219,17 @@ class ScreenerEngine:
                 optimized_applied = True
                 logger.info("[Screener] 使用优化后的策略权重 (%d 个策略)", len(optimized_weights))
 
-        candidates, failures = self._score_and_rank(
+        candidates, failures, history_cache = self._score_and_rank(
             quality_df,
             quality_scores=quality_scores,
             regime_result=regime_result,
             optimized_weights=optimized_weights,
         )
-        top = candidates[: self.config.top_n]
+        top = candidates[:self.config.top_n]
+
+        self._persist_pool_entries(quality_df, quality_scores)
+
+        self._persist_top_daily_data(top, history_cache)
 
         logger.info("[Screener] 选出 Top %d 只股票", len(top))
         for c in top:
@@ -168,12 +247,127 @@ class ScreenerEngine:
             optimized_weights_applied=optimized_applied,
         )
 
+    def _score_pool_entries(
+        self,
+        pool_entries: List[Dict[str, Any]],
+        regime_result: Optional[Any] = None,
+        optimized_weights: Optional[Dict[str, float]] = None,
+    ) -> Tuple[List[ScreenerCandidate], List[DataFetchFailure]]:
+        """Score pool entries using strategy signals (same as _score_and_rank but from pool data)."""
+        from src.core.strategy_signal_extractor import StrategySignalExtractor
+        from src.core.market_regime import DynamicWeightAdjuster
+
+        regime = regime_result.regime if regime_result else "sideways"
+        regime_label = regime_result.label if regime_result else ""
+        adjuster = DynamicWeightAdjuster()
+        if optimized_weights:
+            adjuster.base_weights = optimized_weights
+
+        history_cache: Dict[str, pd.DataFrame] = {}
+
+        candidates = []
+        data_failures: List[DataFetchFailure] = []
+        total = len(pool_entries)
+        processed = 0
+
+        for entry in pool_entries:
+            code = entry["code"]
+            name = entry.get("name", "")
+            price = entry.get("price", 0)
+            market_cap = entry.get("market_cap", 0)
+            turnover_rate = entry.get("turnover_rate", 0)
+            pe_ratio = entry.get("pe_ratio", 0)
+            pb_ratio = entry.get("pb_ratio", 0)
+            base_score = entry.get("base_score", 0)
+
+            strategy_scores: Dict[str, Any] = {}
+            hist_df = self._fetch_stock_history(code)
+            if hist_df is not None and not hist_df.empty:
+                history_cache[code] = hist_df
+            realtime_info = {
+                "turnover_rate": turnover_rate,
+                "pct_chg": 0,
+                "price": price,
+                "market_cap": market_cap,
+            }
+
+            fail_reason = ""
+            if hist_df is not None and len(hist_df) >= 20:
+                extractor = StrategySignalExtractor(market_regime=regime)
+                strat_signals = extractor.extract_all(hist_df, realtime=realtime_info)
+                effective_weights = adjuster.adjust(regime, strat_signals)
+                fusion_score, strategy_avg, category_breakdown = adjuster.compute_fusion_score(
+                    strat_signals, effective_weights, base_factor_score=base_score,
+                )
+                strategy_scores = {
+                    "fusion_score": round(fusion_score, 2),
+                    "strategy_avg": round(strategy_avg, 2),
+                    "base_factor_score": round(base_score, 2),
+                    "regime": regime,
+                    "regime_label": regime_label,
+                    "category_breakdown": category_breakdown,
+                    "triggered_strategies": [
+                        {
+                            "name": s.strategy_name,
+                            "display_name": s.display_name,
+                            "score": round(s.score, 1),
+                            "weight": round(effective_weights.get(s.strategy_name, 0), 3),
+                            "category": s.category,
+                            "details": s.details,
+                        }
+                        for s in strat_signals
+                        if s.triggered and s.score > 0
+                    ],
+                }
+                final_score = fusion_score
+            else:
+                fail_reason = "历史数据不足" if hist_df is None else f"数据条数不足({len(hist_df) if hist_df is not None else 0}<20)"
+                penalty = 0.6
+                final_score = base_score * penalty
+                data_failures.append(DataFetchFailure(code=code, name=name, reason=fail_reason, fallback="base_factor_penalized"))
+
+            candidates.append(ScreenerCandidate(
+                code=code,
+                name=name,
+                score=round(final_score, 2),
+                price=price,
+                market_cap=market_cap,
+                turnover_rate=turnover_rate,
+                pe_ratio=pe_ratio,
+                pb_ratio=pb_ratio,
+                signals={},
+                strategy_scores=strategy_scores,
+                market_regime=regime,
+                market_regime_label=regime_label,
+                quality_tier=entry.get("quality_tier", ""),
+                quality_tier_label=entry.get("quality_tier", ""),
+                data_fetch_failed=hist_df is None or len(hist_df) < 20,
+                data_fetch_reason=fail_reason,
+            ))
+
+            processed += 1
+            if processed % 50 == 0:
+                logger.debug("[Screener] 股票池评分进度: %d/%d", processed, total)
+
+        candidates.sort(key=lambda c: c.score, reverse=True)
+        for i, c in enumerate(candidates, 1):
+            c.rank = i
+
+        return candidates, data_failures, history_cache
+
     def _fetch_full_market_quotes(self) -> Optional[pd.DataFrame]:
         """Fetch full-market A-share realtime quotes via akshare."""
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+
         try:
             import akshare as ak
             logger.info("[Screener] 调用 ak.stock_zh_a_spot_em() 获取全市场行情...")
-            df = ak.stock_zh_a_spot_em()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(ak.stock_zh_a_spot_em)
+                try:
+                    df = future.result(timeout=60)
+                except FuturesTimeout:
+                    raise TimeoutError("akshare 调用超时(60s)")
             if df is not None and not df.empty:
                 logger.info("[Screener] 获取成功: %d 只股票", len(df))
                 return df
@@ -183,14 +377,103 @@ class ScreenerEngine:
         try:
             import efinance as ef
             logger.info("[Screener] 调用 ef.stock.get_realtime_quotes() 获取全市场行情...")
-            df = ef.stock.get_realtime_quotes()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(ef.stock.get_realtime_quotes)
+                try:
+                    df = future.result(timeout=60)
+                except FuturesTimeout:
+                    raise TimeoutError("efinance 调用超时(60s)")
             if df is not None and not df.empty:
                 logger.info("[Screener] efinance 获取成功: %d 只股票", len(df))
                 return df
         except Exception as e:
-            logger.error("[Screener] efinance 也获取失败: %s", e)
+            logger.warning("[Screener] efinance 也获取失败: %s, 尝试 tushare 历史日线...", e)
 
-        return None
+        return self._fetch_last_trading_day_quotes()
+
+    def _fetch_last_trading_day_quotes(self) -> Optional[pd.DataFrame]:
+        """Fallback: fetch last trading day's daily bars from tushare.
+
+        Used when realtime sources (akshare/efinance) are unavailable,
+        e.g. on non-trading days or during network issues.
+        Returns a DataFrame compatible with _apply_basic_filters.
+        """
+        try:
+            from data_provider.tushare_fetcher import TushareFetcher
+            fetcher = TushareFetcher()
+            if not fetcher.is_available():
+                logger.warning("[Screener] Tushare 不可用，无法获取历史日线")
+                return None
+
+            trade_dates = fetcher._get_trade_dates()
+            if not trade_dates:
+                logger.warning("[Screener] Tushare 无法获取交易日历")
+                return None
+
+            last_date = trade_dates[0]
+            logger.info("[Screener] 使用 tushare daily 获取最近交易日(%s)全市场数据...", last_date)
+
+            df = fetcher._call_api_with_rate_limit(
+                "daily",
+                start_date=last_date,
+                end_date=last_date,
+            )
+            if df is None or df.empty:
+                logger.warning("[Screener] tushare daily 返回为空")
+                return None
+
+            stock_list = fetcher.get_stock_list()
+            name_map: Dict[str, str] = {}
+            if stock_list is not None and not stock_list.empty:
+                for _, row in stock_list.iterrows():
+                    name_map[str(row['code'])] = str(row['name'])
+
+            df = df.copy()
+            df['code'] = df['ts_code'].astype(str).str.split('.').str[0]
+            df['名称'] = df['code'].map(name_map).fillna('')
+            df['收盘价'] = pd.to_numeric(df['close'], errors='coerce')
+            df['涨跌幅'] = pd.to_numeric(df['pct_chg'], errors='coerce')
+            df['总市值'] = pd.to_numeric(df.get('amount', 0), errors='coerce')
+
+            if 'vol' in df.columns:
+                df['换手率'] = 0.0
+
+            if 'pre_close' in df.columns and '收盘价' in df.columns:
+                pre_close = pd.to_numeric(df['pre_close'], errors='coerce')
+                close = df['收盘价']
+                valid = pre_close > 0
+                df.loc[valid, '换手率'] = 0.0
+
+            try:
+                df_daily_basic = fetcher._call_api_with_rate_limit(
+                    "daily_basic",
+                    trade_date=last_date,
+                    fields='ts_code,turnover_rate,pe,pb,total_mv,circ_mv',
+                )
+                if df_daily_basic is not None and not df_daily_basic.empty:
+                    df_daily_basic = df_daily_basic.copy()
+                    df_daily_basic['code'] = df_daily_basic['ts_code'].astype(str).str.split('.').str[0]
+                    basic_map = df_daily_basic.set_index('code')
+
+                    df['换手率'] = df['code'].map(basic_map['turnover_rate']).fillna(0)
+                    df['市盈率-动态'] = df['code'].map(basic_map['pe']).fillna(0)
+                    df['市净率'] = df['code'].map(basic_map['pb']).fillna(0)
+                    df['总市值'] = df['code'].map(basic_map['total_mv']).fillna(0) * 1e4
+            except Exception as e:
+                logger.debug("[Screener] tushare daily_basic 获取失败: %s (继续使用基础数据)", e)
+
+            keep_cols = ['code', '名称', '收盘价', '涨跌幅', '换手率', '市盈率-动态', '市净率', '总市值']
+            existing = [c for c in keep_cols if c in df.columns]
+            result = df[existing].copy()
+            result = result.dropna(subset=['收盘价'])
+            result = result[result['code'].str.match(r'^[03689]\d{5}$')]
+
+            logger.info("[Screener] tushare 历史日线获取成功: %d 只股票 (日期=%s)", len(result), last_date)
+            return result
+
+        except Exception as e:
+            logger.error("[Screener] tushare 历史日线获取失败: %s", e)
+            return None
 
     def _apply_basic_filters(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply basic quantitative filters to the market DataFrame."""
@@ -267,7 +550,7 @@ class ScreenerEngine:
         quality_scores: Optional[List[Any]] = None,
         regime_result: Optional[Any] = None,
         optimized_weights: Optional[Dict[str, float]] = None,
-    ) -> Tuple[List[ScreenerCandidate], List[DataFetchFailure]]:
+    ) -> Tuple[List[ScreenerCandidate], List[DataFetchFailure], Dict[str, pd.DataFrame]]:
         """Compute multi-factor score and rank candidates.
 
         The scoring combines:
@@ -355,15 +638,17 @@ class ScreenerEngine:
                 }
                 final_score = fusion_score
             else:
-                final_score = base_score
                 fail_reason = "历史数据不足" if hist_df is None else f"数据条数不足({len(hist_df) if hist_df is not None else 0}<20)"
+                penalty = 0.6
+                penalized_score = base_score * penalty
+                final_score = penalized_score
                 strategy_scores = {
-                    "fusion_score": round(base_score, 2),
+                    "fusion_score": round(penalized_score, 2),
                     "strategy_avg": 0,
                     "base_factor_score": round(base_score, 2),
                     "regime": regime,
                     "regime_label": regime_label,
-                    "note": f"历史数据获取失败: {fail_reason}，仅使用基础因子评分",
+                    "note": f"历史数据获取失败: {fail_reason}，基础因子评分打{int(penalty*100)}%折",
                 }
                 data_failures.append(DataFetchFailure(
                     code=code,
@@ -417,16 +702,159 @@ class ScreenerEngine:
             logger.debug("[Screener] 加载优化权重失败: %s", e)
         return None
 
-    def _fetch_stock_history(self, code: str) -> Optional[pd.DataFrame]:
+    def _persist_pool_entries(self, quality_df: pd.DataFrame, quality_scores: List) -> None:
         try:
-            from data_provider.factory import DataProviderFactory
-            factory = DataProviderFactory()
+            import math as _math
+            from src.storage import DatabaseManager, StockPoolEntry, StockPoolMeta
+            from src.core.stock_pool import StockPoolInitializer
+
+            pool = StockPoolInitializer.get_instance()
+            version = datetime.now().strftime("v%Y%m%d_%H%M%S")
+            quality_map = {qs.code: qs for qs in quality_scores}
+
+            def _safe_float(val, default=0.0):
+                if val is None:
+                    return default
+                try:
+                    f = float(val)
+                    return default if _math.isnan(f) or _math.isinf(f) else f
+                except (ValueError, TypeError):
+                    return default
+
+            entries = []
+            excluded_count = 0
+            for qs in quality_scores:
+                if qs.tier == "excluded":
+                    excluded_count += 1
+
+            for _, row in quality_df.iterrows():
+                code = str(row.get('_code', ''))
+                name = str(row.get('_name', ''))
+                price = _safe_float(row.get('_price'))
+                market_cap = _safe_float(row.get('_market_cap'))
+                turnover = _safe_float(row.get('_turnover_rate'))
+                pe = _safe_float(row.get('_pe_ratio'))
+                pb = _safe_float(row.get('_pb_ratio'))
+                pct_chg = _safe_float(row.get('_pct_chg'))
+
+                qs = quality_map.get(code)
+                quality_tier = qs.tier if qs else "standard"
+                exclude_reason = qs.exclusion_reason if qs else ""
+                is_excluded = quality_tier == "excluded"
+
+                board = pool._classify_board(code)
+                industry = pool._classify_industry(name)
+                base_score = pool._compute_base_score(turnover, pct_chg, pe, pb, market_cap)
+
+                tags_list = [board, industry, quality_tier]
+                if base_score >= 60:
+                    tags_list.append("高分基线")
+                if turnover >= 5:
+                    tags_list.append("活跃换手")
+                if 100e8 <= market_cap <= 500e8:
+                    tags_list.append("中盘成长")
+                elif market_cap >= 500e8:
+                    tags_list.append("大盘蓝筹")
+
+                entries.append({
+                    "pool_version": version,
+                    "code": code,
+                    "name": name,
+                    "board": board,
+                    "industry": industry,
+                    "quality_tier": quality_tier,
+                    "base_score": round(base_score, 2),
+                    "tags": json.dumps(tags_list, ensure_ascii=False),
+                    "is_excluded": is_excluded,
+                    "exclude_reason": exclude_reason,
+                    "market_cap": market_cap,
+                    "pe_ratio": pe,
+                    "pb_ratio": pb,
+                    "price": price,
+                    "turnover_rate": turnover,
+                })
+
+            if not entries:
+                return
+
+            db = DatabaseManager.get_instance()
+            with db.session_scope() as session:
+                existing_meta = session.query(StockPoolMeta).filter_by(
+                    pool_version=version,
+                ).first()
+                if existing_meta:
+                    logger.warning("[Screener] 股票池版本 %s 已存在，跳过持久化", version)
+                    return
+
+                batch_size = 200
+                for i in range(0, len(entries), batch_size):
+                    batch = entries[i:i + batch_size]
+                    for e in batch:
+                        existing = session.query(StockPoolEntry).filter_by(
+                            pool_version=version, code=e["code"],
+                        ).first()
+                        if existing:
+                            for k, v in e.items():
+                                setattr(existing, k, v)
+                        else:
+                            session.add(StockPoolEntry(**e))
+                    session.commit()
+
+                meta = StockPoolMeta(
+                    pool_version=version,
+                    status="completed",
+                    expires_at=date.today() + timedelta(days=45),
+                    started_at=datetime.now(),
+                    finished_at=datetime.now(),
+                    total_stocks=len(quality_scores),
+                    filtered_stocks=len(entries),
+                    tagged_stocks=len([e for e in entries if not e["is_excluded"]]),
+                    excluded_stocks=excluded_count,
+                    progress_pct=100.0,
+                )
+                session.add(meta)
+                session.commit()
+
+            logger.info("[Screener] 股票池数据已持久化: version=%s, entries=%d, excluded=%d", version, len(entries), excluded_count)
+        except Exception as e:
+            logger.warning("[Screener] 股票池持久化失败(不影响选股结果): %s", e)
+
+    def _persist_top_daily_data(self, top_candidates: List[ScreenerCandidate], history_cache: Dict[str, pd.DataFrame]) -> None:
+        try:
+            from src.storage import DatabaseManager
+            db = DatabaseManager.get_instance()
+            saved = 0
+            for c in top_candidates:
+                hist_df = history_cache.get(c.code)
+                if hist_df is not None and not hist_df.empty:
+                    try:
+                        db.save_daily_data(hist_df, code=c.code, data_source="screener_scan")
+                        saved += 1
+                    except Exception as save_err:
+                        logger.debug("[Screener] 保存 %s 日线数据失败: %s", c.code, save_err)
+            if saved > 0:
+                logger.info("[Screener] Top %d 日线数据已持久化: %d 只", len(top_candidates), saved)
+        except Exception as e:
+            logger.warning("[Screener] 日线数据持久化失败(不影响选股结果): %s", e)
+
+    def _fetch_stock_history(self, code: str, persist: bool = False) -> Optional[pd.DataFrame]:
+        try:
+            if self._data_factory is None:
+                from data_provider.factory import DataProviderFactory
+                self._data_factory = DataProviderFactory()
             end = date.today()
             start = end - timedelta(days=120)
-            df = factory.get_daily_history(code, start_date=start, end_date=end)
+            df = self._data_factory.get_daily_history(code, start_date=start, end_date=end)
             if df is not None and not df.empty:
                 if 'date' in df.columns:
                     df = df.sort_values('date').reset_index(drop=True)
+                if persist:
+                    try:
+                        from src.storage import DatabaseManager
+                        db = DatabaseManager.get_instance()
+                        db.save_daily_data(df, code=code, data_source="screener_scan")
+                    except Exception as save_err:
+                        logger.debug("[Screener] 保存 %s 日线数据失败(不影响分析): %s", code, save_err)
                 return df
         except Exception as e:
             logger.debug("[Screener] 获取 %s 历史数据失败: %s", code, e)
@@ -449,19 +877,21 @@ class ScreenerEngine:
         return 5.0
 
     def _score_momentum(self, pct_chg: float, signals: Dict) -> float:
-        """Score based on daily price change — slight positive momentum preferred."""
-        if -2.0 <= pct_chg <= 3.0:
+        if -1.0 <= pct_chg <= 2.0:
             signals['momentum_signal'] = 'gentle_up'
             return 25.0
-        if 3.0 < pct_chg <= 7.0:
-            signals['momentum_signal'] = 'strong_up'
+        if 2.0 < pct_chg <= 4.0:
+            signals['momentum_signal'] = 'moderate_up'
             return 20.0
-        if -5.0 <= pct_chg < -2.0:
-            signals['momentum_signal'] = 'pullback'
-            return 15.0
-        if pct_chg > 7.0:
+        if -3.0 <= pct_chg < -1.0:
+            signals['momentum_signal'] = 'slight_pullback'
+            return 18.0
+        if 4.0 < pct_chg <= 7.0:
             signals['momentum_signal'] = 'chase_risk'
-            return 5.0
+            return 10.0
+        if pct_chg > 7.0:
+            signals['momentum_signal'] = 'high_chase_risk'
+            return 3.0
         signals['momentum_signal'] = 'weak'
         return 5.0
 

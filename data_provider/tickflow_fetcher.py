@@ -97,7 +97,8 @@ class TickFlowFetcher(BaseFetcher):
             return self._client
 
     def _fetch_raw_data(
-        self, stock_code: str, start_date: str, end_date: str
+        self, stock_code: str, start_date: str, end_date: str,
+        adjust: str = "qfq"
     ) -> pd.DataFrame:
         raise DataFetchError(
             "TickFlowFetcher P0 only supports market review endpoints"

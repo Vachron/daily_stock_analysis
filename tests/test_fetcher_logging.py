@@ -33,7 +33,7 @@ class _SuccessFetcher(BaseFetcher):
     name = "SuccessFetcher"
     priority = 1
 
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
         return _sample_df()
 
     def _normalize_data(self, df: pd.DataFrame, stock_code: str) -> pd.DataFrame:
@@ -44,7 +44,7 @@ class _FailureFetcher(BaseFetcher):
     name = "FailureFetcher"
     priority = 0
 
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str, adjust: str = "qfq") -> pd.DataFrame:
         raise DataFetchError(
             "Eastmoney 历史K线接口失败: "
             "endpoint=push2his.eastmoney.com/api/qt/stock/kline/get, "

@@ -19,11 +19,16 @@ class ScreenerRunRequest(BaseModel):
     max_turnover_rate: Optional[float] = Field(None, description="最大换手率（%）")
     scan_mode: Optional[str] = Field(
         "quality_only",
-        description="扫描模式: premium/quality_only/standard/full",
+        description="扫描模式: premium/quality_only/standard/full/pool",
     )
     use_optimized_weights: Optional[bool] = Field(
         True, description="是否使用优化后的策略权重",
     )
+    pool_boards: Optional[List[str]] = Field(None, description="股票池板块筛选（如：科创板,创业板）")
+    pool_industries: Optional[List[str]] = Field(None, description="股票池行业筛选（如：半导体,新能源）")
+    pool_qualities: Optional[List[str]] = Field(None, description="股票池质量筛选（如：premium,standard）")
+    pool_tags: Optional[List[str]] = Field(None, description="股票池标签筛选（如：高分基线,活跃换手）")
+    pool_min_base_score: Optional[float] = Field(None, description="股票池最低基础评分")
 
 
 class DataFetchFailureItem(BaseModel):
@@ -126,3 +131,59 @@ class ScreenerTrackingUpdateResponse(BaseModel):
 class ScreenerBacktestFeedbackResponse(BaseModel):
     verified: int = 0
     total_checked: int = 0
+
+
+class PoolInitRequest(BaseModel):
+    expire_days: int = Field(45, ge=7, le=90, description="股票池有效期（天）")
+
+
+class PoolStatusResponse(BaseModel):
+    has_pool: bool = False
+    status: str = "none"
+    pool_version: Optional[str] = None
+    expires_at: Optional[str] = None
+    days_remaining: Optional[int] = None
+    total_stocks: int = 0
+    filtered_stocks: int = 0
+    tagged_stocks: int = 0
+    excluded_stocks: int = 0
+    progress_pct: float = 0.0
+    eta_seconds: float = 0.0
+    error_message: Optional[str] = None
+
+
+class PoolSummaryResponse(BaseModel):
+    boards: Dict[str, int] = Field(default_factory=dict)
+    industries: Dict[str, int] = Field(default_factory=dict)
+    qualities: Dict[str, int] = Field(default_factory=dict)
+    total_active: int = 0
+
+
+class PoolEntryItem(BaseModel):
+    code: str
+    name: str = ""
+    board: str = ""
+    industry: str = ""
+    quality_tier: str = ""
+    base_score: float = 0.0
+    tags: List[str] = Field(default_factory=list)
+    market_cap: float = 0.0
+    pe_ratio: float = 0.0
+    pb_ratio: float = 0.0
+    price: float = 0.0
+    turnover_rate: float = 0.0
+
+
+class PoolCodesResponse(BaseModel):
+    total: int = 0
+    entries: List[PoolEntryItem] = Field(default_factory=list)
+
+
+class PoolInitResponse(BaseModel):
+    pool_version: str
+    message: str = "初始化已启动"
+
+
+class PoolCancelResponse(BaseModel):
+    cancelled: bool = False
+    message: str = ""

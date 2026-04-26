@@ -171,7 +171,8 @@ class BaostockFetcher(BaseFetcher):
         retry=retry_if_exception_type((ConnectionError, TimeoutError)),
         before_sleep=before_sleep_log(logger, logging.WARNING),
     )
-    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,
+                        adjust: str = "qfq") -> pd.DataFrame:
         """
         从 Baostock 获取原始数据
         
@@ -184,36 +185,33 @@ class BaostockFetcher(BaseFetcher):
         4. 调用 API 查询数据
         5. 将结果转换为 DataFrame
         """
-        # 美股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if _is_us_code(stock_code):
             raise DataFetchError(f"BaostockFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
 
-        # 港股不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if _is_hk_market(stock_code):
             raise DataFetchError(f"BaostockFetcher 不支持港股 {stock_code}，请使用 AkshareFetcher")
 
-        # 北交所不支持，抛出异常让 DataFetcherManager 切换到其他数据源
         if is_bse_code(stock_code):
             raise DataFetchError(
                 f"BaostockFetcher 不支持北交所 {stock_code}，将自动切换其他数据源"
             )
         
-        # 转换代码格式
         bs_code = self._convert_stock_code(stock_code)
         
-        logger.debug(f"调用 Baostock query_history_k_data_plus({bs_code}, {start_date}, {end_date})")
+        adjustflag_map = {"qfq": "2", "hfq": "1", "none": "3"}
+        adjustflag = adjustflag_map.get(adjust, "2")
+        
+        logger.debug(f"调用 Baostock query_history_k_data_plus({bs_code}, {start_date}, {end_date}, adjustflag={adjustflag})")
         
         with self._baostock_session() as bs:
             try:
-                # 查询日线数据
-                # adjustflag: 1-后复权，2-前复权，3-不复权
                 rs = bs.query_history_k_data_plus(
                     code=bs_code,
                     fields="date,open,high,low,close,volume,amount,pctChg",
                     start_date=start_date,
                     end_date=end_date,
-                    frequency="d",  # 日线
-                    adjustflag="2"  # 前复权
+                    frequency="d",
+                    adjustflag=adjustflag
                 )
                 
                 if rs.error_code != '0':

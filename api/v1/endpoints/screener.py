@@ -11,6 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from api.deps import get_database_manager
 from api.v1.schemas.screener import (
+    PoolCancelResponse,
+    PoolCodesResponse,
+    PoolInitRequest,
+    PoolInitResponse,
+    PoolStatusResponse,
+    PoolSummaryResponse,
     ScreenerBacktestFeedbackResponse,
     ScreenerPicksResponse,
     ScreenerPerformanceResponse,
@@ -61,6 +67,16 @@ def run_screener(
             config_overrides['scan_mode'] = request.scan_mode
         if request.use_optimized_weights is not None:
             config_overrides['use_optimized_weights'] = request.use_optimized_weights
+        if request.pool_boards:
+            config_overrides['pool_boards'] = request.pool_boards
+        if request.pool_industries:
+            config_overrides['pool_industries'] = request.pool_industries
+        if request.pool_qualities:
+            config_overrides['pool_qualities'] = request.pool_qualities
+        if request.pool_tags:
+            config_overrides['pool_tags'] = request.pool_tags
+        if request.pool_min_base_score is not None:
+            config_overrides['pool_min_base_score'] = request.pool_min_base_score
 
         result = service.run_daily_screen(
             top_n=request.top_n,
@@ -230,4 +246,196 @@ def get_performance(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询失败: {str(exc)}"},
+        )
+
+
+@router.post(
+    "/pool/init",
+    response_model=PoolInitResponse,
+    responses={
+        200: {"description": "股票池初始化已启动"},
+        409: {"description": "初始化正在进行中"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="初始化股票池",
+    description="全量扫描A股，过滤垃圾股，分类打标签。后台异步执行，通过 /pool/status 查看进度",
+)
+def init_pool(
+    request: PoolInitRequest = PoolInitRequest(),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> PoolInitResponse:
+    try:
+        from src.core.stock_pool import StockPoolInitializer
+        pool = StockPoolInitializer.get_instance(db_manager)
+        progress = pool.get_progress()
+        if progress.status == "running":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "already_running", "message": f"初始化正在进行中 (version={progress.pool_version}, 进度={progress.progress_pct:.1f}%)"},
+            )
+        version = pool.start_init(expire_days=request.expire_days)
+        return PoolInitResponse(pool_version=version, message="初始化已启动，请通过 /pool/status 查看进度")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"股票池初始化失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"初始化失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/pool/status",
+    response_model=PoolStatusResponse,
+    responses={
+        200: {"description": "股票池状态"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取股票池状态",
+    description="获取股票池初始化进度、过期倒计时等信息",
+)
+def get_pool_status(
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> PoolStatusResponse:
+    try:
+        from src.core.stock_pool import StockPoolInitializer
+        pool = StockPoolInitializer.get_instance(db_manager)
+        result = pool.get_pool_status()
+
+        progress = pool.get_progress()
+        if progress.status == "running":
+            result["status"] = "running"
+            result["progress_pct"] = progress.progress_pct
+            result["eta_seconds"] = progress.eta_seconds
+            result["total_stocks"] = progress.total
+            result["filtered_stocks"] = progress.filtered
+            result["tagged_stocks"] = progress.tagged
+            result["excluded_stocks"] = progress.excluded
+
+        return PoolStatusResponse(**result)
+    except Exception as exc:
+        logger.error(f"查询股票池状态失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/pool/summary",
+    response_model=PoolSummaryResponse,
+    responses={
+        200: {"description": "股票池分布统计"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取股票池分布",
+    description="统计股票池中板块、行业、质量等级分布",
+)
+def get_pool_summary(
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> PoolSummaryResponse:
+    try:
+        from src.core.stock_pool import StockPoolInitializer
+        pool = StockPoolInitializer.get_instance(db_manager)
+        result = pool.get_pool_summary()
+        return PoolSummaryResponse(**result)
+    except Exception as exc:
+        logger.error(f"查询股票池分布失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/pool/codes",
+    response_model=PoolCodesResponse,
+    responses={
+        200: {"description": "股票池条目列表"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="查询股票池条目",
+    description="按板块/行业/质量/标签筛选股票池中的股票",
+)
+def get_pool_codes(
+    boards: Optional[str] = Query(None, description="板块筛选，逗号分隔（如：科创板,创业板）"),
+    industries: Optional[str] = Query(None, description="行业筛选，逗号分隔（如：半导体,新能源）"),
+    qualities: Optional[str] = Query(None, description="质量筛选，逗号分隔（如：premium,standard）"),
+    tags: Optional[str] = Query(None, description="标签筛选，逗号分隔（如：高分基线,活跃换手）"),
+    min_base_score: float = Query(0, ge=0, le=100, description="最低基础评分"),
+    limit: int = Query(500, ge=1, le=2000, description="最大返回数量"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> PoolCodesResponse:
+    try:
+        from src.core.stock_pool import StockPoolInitializer
+        pool = StockPoolInitializer.get_instance(db_manager)
+
+        board_list = boards.split(",") if boards else None
+        industry_list = industries.split(",") if industries else None
+        quality_list = qualities.split(",") if qualities else None
+        tag_list = tags.split(",") if tags else None
+
+        entries = pool.get_pool_codes(
+            boards=board_list,
+            industries=industry_list,
+            qualities=quality_list,
+            tags=tag_list,
+            min_base_score=min_base_score,
+            limit=limit,
+        )
+
+        items = [
+            {
+                "code": e["code"],
+                "name": e.get("name", ""),
+                "board": e.get("board", ""),
+                "industry": e.get("industry", ""),
+                "quality_tier": e.get("quality_tier", ""),
+                "base_score": e.get("base_score", 0),
+                "tags": e.get("tags", []),
+                "market_cap": e.get("market_cap", 0),
+                "pe_ratio": e.get("pe_ratio", 0),
+                "pb_ratio": e.get("pb_ratio", 0),
+                "price": e.get("price", 0),
+                "turnover_rate": e.get("turnover_rate", 0),
+            }
+            for e in entries
+        ]
+
+        return PoolCodesResponse(total=len(items), entries=items)
+    except Exception as exc:
+        logger.error(f"查询股票池条目失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询失败: {str(exc)}"},
+        )
+
+
+@router.post(
+    "/pool/cancel",
+    response_model=PoolCancelResponse,
+    responses={
+        200: {"description": "取消初始化"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="取消股票池初始化",
+    description="取消正在进行的股票池初始化",
+)
+def cancel_pool_init(
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> PoolCancelResponse:
+    try:
+        from src.core.stock_pool import StockPoolInitializer
+        pool = StockPoolInitializer.get_instance(db_manager)
+        progress = pool.get_progress()
+        if progress.status != "running":
+            return PoolCancelResponse(cancelled=False, message="没有正在进行的初始化")
+        pool.cancel()
+        return PoolCancelResponse(cancelled=True, message="已发送取消信号")
+    except Exception as exc:
+        logger.error(f"取消初始化失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"取消失败: {str(exc)}"},
         )

@@ -624,9 +624,14 @@ class LongbridgeFetcher(BaseFetcher):
     # ------------------------------------------------------------------
 
     def _fetch_raw_data(
-        self, stock_code: str, start_date: str, end_date: str
+        self, stock_code: str, start_date: str, end_date: str,
+        adjust: str = "qfq"
     ) -> pd.DataFrame:
-        """Fetch historical candlesticks from Longbridge."""
+        """Fetch historical candlesticks from Longbridge.
+        
+        Note: Longbridge returns non-adjusted data by default.
+        Adjust mode parameter is accepted for interface compatibility.
+        """
         symbol = _to_longbridge_symbol(stock_code)
         if symbol is None:
             raise ValueError(f"Cannot convert {stock_code} to Longbridge symbol")
