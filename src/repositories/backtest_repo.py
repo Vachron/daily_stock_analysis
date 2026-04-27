@@ -11,7 +11,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy import and_, case, delete, desc, func, or_, select
 
 from src.storage import BacktestResult, BacktestSummary, DatabaseManager, AnalysisHistory
 
@@ -27,7 +27,8 @@ class BacktestRepository:
     def get_candidates(
         self,
         *,
-        code: Optional[str],
+        code: Optional[str] = None,
+        codes: Optional[List[str]] = None,
         min_age_days: int,
         limit: int,
         eval_window_days: int,
@@ -39,8 +40,26 @@ class BacktestRepository:
 
         with self.db.get_session() as session:
             conditions = [AnalysisHistory.created_at <= cutoff_dt]
-            if code:
-                conditions.append(AnalysisHistory.code == code)
+            if codes:
+                expanded = list(codes)
+                for c in codes:
+                    if '.' not in c:
+                        expanded.append(f'{c}.SH')
+                        expanded.append(f'{c}.SZ')
+                        expanded.append(f'{c}.BJ')
+                conditions.append(AnalysisHistory.code.in_(expanded))
+            elif code:
+                if '.' not in code:
+                    conditions.append(
+                        or_(
+                            AnalysisHistory.code == code,
+                            AnalysisHistory.code == f'{code}.SH',
+                            AnalysisHistory.code == f'{code}.SZ',
+                            AnalysisHistory.code == f'{code}.BJ',
+                        )
+                    )
+                else:
+                    conditions.append(AnalysisHistory.code == code)
 
             query = select(AnalysisHistory).where(and_(*conditions))
 
@@ -131,7 +150,11 @@ class BacktestRepository:
                 )
                 .join(AnalysisHistory, AnalysisHistory.id == BacktestResult.analysis_history_id)
                 .where(where_clause)
-                .order_by(desc(BacktestResult.analysis_date), desc(BacktestResult.evaluated_at))
+                .order_by(
+                    case((BacktestResult.eval_status == "completed", 0), else_=1),
+                    desc(BacktestResult.analysis_date),
+                    desc(BacktestResult.evaluated_at),
+                )
                 .offset(offset)
                 .limit(limit)
             ).all()
@@ -189,7 +212,11 @@ class BacktestRepository:
             query = (
                 select(BacktestResult)
                 .where(where_clause)
-                .order_by(desc(BacktestResult.analysis_date), desc(BacktestResult.evaluated_at))
+                .order_by(
+                    case((BacktestResult.eval_status == "completed", 0), else_=1),
+                    desc(BacktestResult.analysis_date),
+                    desc(BacktestResult.evaluated_at),
+                )
             )
             if limit is not None:
                 query = query.limit(limit)
@@ -232,6 +259,11 @@ class BacktestRepository:
                     "take_profit_trigger_rate",
                     "ambiguous_rate",
                     "avg_days_to_first_hit",
+                    "sharpe_ratio",
+                    "max_drawdown_pct",
+                    "profit_factor",
+                    "avg_win_pct",
+                    "avg_loss_pct",
                     "advice_breakdown_json",
                     "diagnostics_json",
                 ):

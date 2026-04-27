@@ -28,6 +28,10 @@ from api.v1.schemas.screener import (
     ScreenerRunResponse,
     ScreenerTrackingUpdateResponse,
     ScreenerWatchListResponse,
+    WatchBatchCloseRequest,
+    WatchBatchCloseResponse,
+    WatchBatchRemoveRequest,
+    WatchBatchRemoveResponse,
     WatchCloseRequest,
     WatchCloseResponse,
     WatchRemoveRequest,
@@ -395,29 +399,118 @@ def remove_watch_stock(
 
 
 @router.post(
+    "/watch/batch-close",
+    response_model=WatchBatchCloseResponse,
+    summary="批量关闭观察",
+    description="批量关闭观察池中的股票",
+)
+def batch_close_watch(
+    request: WatchBatchCloseRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> WatchBatchCloseResponse:
+    service = ScreenerService(db_manager)
+    closed = 0
+    failed = 0
+    for code in request.codes:
+        try:
+            result = service.close_watch_stock(
+                code=code,
+                exit_reason=request.exit_reason,
+            )
+            closed += result.get("closed", 0)
+        except Exception:
+            failed += 1
+    return WatchBatchCloseResponse(closed=closed, failed=failed)
+
+
+@router.post(
+    "/watch/batch-remove",
+    response_model=WatchBatchRemoveResponse,
+    summary="批量移除观察",
+    description="批量从观察池中移除股票",
+)
+def batch_remove_watch(
+    request: WatchBatchRemoveRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> WatchBatchRemoveResponse:
+    service = ScreenerService(db_manager)
+    removed = 0
+    failed = 0
+    for code in request.codes:
+        try:
+            result = service.remove_watch_stock(code=code)
+            removed += result.get("removed", 0)
+        except Exception:
+            failed += 1
+    return WatchBatchRemoveResponse(removed=removed, failed=failed)
+
+
+_tracking_lock = threading.Lock()
+_tracking_running = False
+_tracking_result = None
+
+
+def _run_tracking_bg(service, strategy_tag, db_manager):
+    global _tracking_running, _tracking_result
+    try:
+        result = service.update_tracking_from_market(strategy_tag=strategy_tag)
+        with _tracking_lock:
+            _tracking_result = result
+    except Exception as exc:
+        logger.error("[Screener] 后台追踪更新失败: %s", exc, exc_info=True)
+        with _tracking_lock:
+            _tracking_result = {"updated": 0, "closed": 0, "error": str(exc)}
+    finally:
+        with _tracking_lock:
+            _tracking_running = False
+
+
+@router.post(
     "/tracking/update",
     response_model=ScreenerTrackingUpdateResponse,
     responses={
         200: {"description": "追踪更新完成"},
+        409: {"description": "追踪更新正在执行中"},
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="更新观察追踪",
-    description="更新观察池中股票的实时收益、最大收益、最大回撤，并自动止损/止盈/到期关闭",
+    description="更新观察池中股票的实时收益、最大收益、最大回撤，并自动止损/止盈/到期关闭（异步执行）",
 )
 def update_tracking(
     strategy_tag: Optional[str] = Query(None, description="策略标签筛选"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> ScreenerTrackingUpdateResponse:
-    try:
-        service = ScreenerService(db_manager)
-        result = service.update_tracking_from_market(strategy_tag=strategy_tag)
-        return ScreenerTrackingUpdateResponse(**result)
-    except Exception as exc:
-        logger.error(f"追踪更新失败: {exc}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail={"error": "internal_error", "message": f"追踪更新失败: {str(exc)}"},
-        )
+    global _tracking_running, _tracking_result
+    with _tracking_lock:
+        if _tracking_running:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "already_running", "message": "追踪更新正在执行中，请稍后再试"},
+            )
+        _tracking_running = True
+        _tracking_result = None
+
+    service = ScreenerService(db_manager)
+    t = threading.Thread(
+        target=_run_tracking_bg,
+        args=(service, strategy_tag, db_manager),
+        daemon=True,
+    )
+    t.start()
+    return ScreenerTrackingUpdateResponse(updated=0, closed=0, status="running", message="追踪更新已启动，请稍后刷新查看结果")
+
+
+@router.get(
+    "/tracking/status",
+    summary="查询追踪更新状态",
+    description="查询当前追踪更新是否正在执行，以及最近一次更新的结果",
+)
+def get_tracking_status():
+    global _tracking_running, _tracking_result
+    with _tracking_lock:
+        if _tracking_running:
+            return {"status": "running", "result": None}
+        return {"status": "idle", "result": _tracking_result}
 
 
 @router.post(
@@ -721,6 +814,7 @@ def get_insight_by_code(
 )
 def generate_insights(
     screen_date: Optional[str] = Query(None, description="指定选股日期 (YYYY-MM-DD)，默认取最近一次"),
+    force: bool = Query(False, description="强制重新生成（覆盖已有洞察）"),
     db_manager: DatabaseManager = Depends(get_database_manager),
 ):
     target_date = date.fromisoformat(screen_date) if screen_date else None
@@ -799,6 +893,7 @@ def generate_insights(
                 screen_date=target_date,
                 market_regime=market_regime,
                 market_regime_label=market_regime_label,
+                force_regenerate=force,
             )
             logger.info("[ScreenerInsight] 洞察生成完成: %s", result)
         except Exception as exc:

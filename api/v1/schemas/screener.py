@@ -128,6 +128,8 @@ class ScreenerPerformanceResponse(BaseModel):
 class ScreenerTrackingUpdateResponse(BaseModel):
     updated: int = 0
     closed: int = 0
+    status: Optional[str] = None
+    message: Optional[str] = None
 
 
 class ScreenerBacktestFeedbackResponse(BaseModel):
@@ -210,3 +212,22 @@ class WatchRemoveRequest(BaseModel):
 class WatchRemoveResponse(BaseModel):
     code: str
     removed: int = 0
+
+
+class WatchBatchCloseRequest(BaseModel):
+    codes: List[str] = Field(default_factory=list, description="股票代码列表")
+    exit_reason: str = Field("manual", description="退出原因")
+
+
+class WatchBatchCloseResponse(BaseModel):
+    closed: int = 0
+    failed: int = 0
+
+
+class WatchBatchRemoveRequest(BaseModel):
+    codes: List[str] = Field(default_factory=list, description="股票代码列表")
+
+
+class WatchBatchRemoveResponse(BaseModel):
+    removed: int = 0
+    failed: int = 0

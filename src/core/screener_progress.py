@@ -116,11 +116,13 @@ class ScreenerProgressBroadcaster:
             self._subscribers.append(queue)
             try:
                 self._main_loop = asyncio.get_running_loop()
+                logger.info("[ScreenerProgress] 订阅者加入，当前订阅者: %d, 事件循环: %s", len(self._subscribers), self._main_loop)
             except RuntimeError:
                 try:
                     self._main_loop = asyncio.get_event_loop()
+                    logger.info("[ScreenerProgress] 订阅者加入(fallback)，当前订阅者: %d, 事件循环: %s", len(self._subscribers), self._main_loop)
                 except RuntimeError:
-                    pass
+                    logger.warning("[ScreenerProgress] 订阅者加入，但无法获取事件循环，当前订阅者: %d", len(self._subscribers))
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:
         with self._subscribers_lock:
@@ -132,7 +134,11 @@ class ScreenerProgressBroadcaster:
         with self._subscribers_lock:
             subscribers = self._subscribers.copy()
             loop = self._main_loop
-        if not subscribers or loop is None:
+        if not subscribers:
+            logger.debug("[ScreenerProgress] 无订阅者，跳过广播 %s", event_type)
+            return
+        if loop is None:
+            logger.warning("[ScreenerProgress] 事件循环为 None，无法广播 %s (订阅者: %d)", event_type, len(subscribers))
             return
         for queue in subscribers:
             try:

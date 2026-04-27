@@ -14,6 +14,8 @@ import type {
   PoolInitResponse,
   PoolCancelResponse,
   ScreenerInsightItem,
+  WatchBatchCloseResponse,
+  WatchBatchRemoveResponse,
   WatchCloseRequest,
   WatchCloseResponse,
   WatchRemoveRequest,
@@ -107,11 +109,34 @@ export const screenerApi = {
     return toCamelCase<WatchRemoveResponse>(response.data);
   },
 
+  batchCloseWatch: async (codes: string[]): Promise<WatchBatchCloseResponse> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/screener/watch/batch-close',
+      { codes, exit_reason: 'manual' },
+    );
+    return toCamelCase<WatchBatchCloseResponse>(response.data);
+  },
+
+  batchRemoveWatch: async (codes: string[]): Promise<WatchBatchRemoveResponse> => {
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/screener/watch/batch-remove',
+      { codes },
+    );
+    return toCamelCase<WatchBatchRemoveResponse>(response.data);
+  },
+
   updateTracking: async (): Promise<ScreenerTrackingUpdateResponse> => {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/screener/tracking/update',
     );
     return toCamelCase<ScreenerTrackingUpdateResponse>(response.data);
+  },
+
+  getTrackingStatus: async (): Promise<{ status: string; result: Record<string, unknown> | null }> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/screener/tracking/status',
+    );
+    return toCamelCase<{ status: string; result: Record<string, unknown> | null }>(response.data);
   },
 
   applyBacktestFeedback: async (): Promise<ScreenerBacktestFeedbackResponse> => {

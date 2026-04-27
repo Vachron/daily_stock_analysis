@@ -200,16 +200,20 @@ class ScreenerService:
 
         updated = 0
         closed = 0
+        total = len(watch_rows)
         today = date.today()
+        logger.info("[Screener] 开始更新追踪: 共 %d 只股票", total)
 
-        for row in watch_rows:
+        for idx, row in enumerate(watch_rows, 1):
             try:
                 current_price = self._fetch_current_price(row.code)
                 if current_price is None:
+                    logger.warning("[Screener] 追踪更新跳过 %s (%s): 无法获取当前价格 [%d/%d]", row.code, row.name, idx, total)
                     continue
 
                 entry_price = row.price_at_screen
                 if not entry_price or entry_price <= 0:
+                    logger.warning("[Screener] 追踪更新跳过 %s (%s): 入场价无效 (%s) [%d/%d]", row.code, row.name, entry_price, idx, total)
                     continue
 
                 return_pct = round((current_price - entry_price) / entry_price * 100, 2)
@@ -222,6 +226,8 @@ class ScreenerService:
                 drawdown_from_peak = 0.0
                 if max_return_pct and max_return_pct > 0:
                     drawdown_from_peak = round(return_pct - max_return_pct, 2)
+                elif return_pct < 0:
+                    drawdown_from_peak = return_pct
 
                 max_drawdown_pct = row.max_drawdown_pct
                 if max_drawdown_pct is None or drawdown_from_peak < max_drawdown_pct:
@@ -263,6 +269,8 @@ class ScreenerService:
                     **update_data,
                 )
                 updated += 1
+                logger.info("[Screener] 追踪更新成功 %s (%s): ret=%.2f%% max_ret=%.2f%% max_dd=%.2f%% [%d/%d]",
+                            row.code, row.name, return_pct, max_return_pct, max_drawdown_pct, idx, total)
 
             except Exception as exc:
                 logger.warning("[Screener] 更新追踪失败 %s: %s", row.code, exc)
@@ -339,13 +347,42 @@ class ScreenerService:
             return list(rows)
 
     def _fetch_current_price(self, code: str) -> Optional[float]:
-        """Fetch current price for a stock using the data provider layer."""
+        """Fetch current price for a stock.
+
+        During trading hours: try realtime quote first, fallback to daily close.
+        Outside trading hours: use latest close from daily bars (faster & more reliable).
+        """
         try:
+            from src.core.trading_calendar import get_effective_trading_date, is_market_open
+            from src.market_context import detect_market
             from data_provider.factory import DataProviderFactory
             factory = DataProviderFactory()
-            quote = factory.get_realtime_quote(code)
-            if quote and quote.price:
-                return float(quote.price)
+            market = detect_market(code)
+            today = date.today()
+            is_trading = market and is_market_open(market, today)
+
+            if is_trading:
+                try:
+                    quote = factory.get_realtime_quote(code)
+                    if quote and quote.price:
+                        return float(quote.price)
+                except Exception:
+                    logger.debug("[Screener] %s 实时行情获取失败，回退到收盘价", code)
+
+            effective_date = get_effective_trading_date(market)
+            df = factory.get_daily_history(code, start_date=effective_date, end_date=effective_date)
+            if df is not None and not df.empty:
+                close_col = 'close' if 'close' in df.columns else '收盘' if '收盘' in df.columns else None
+                if close_col:
+                    return float(df[close_col].iloc[-1])
+
+            if not is_trading:
+                try:
+                    quote = factory.get_realtime_quote(code)
+                    if quote and quote.price:
+                        return float(quote.price)
+                except Exception:
+                    pass
         except Exception as exc:
             logger.debug("[Screener] 获取 %s 当前价格失败: %s", code, exc)
         return None

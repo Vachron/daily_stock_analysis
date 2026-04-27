@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 class BacktestRunRequest(BaseModel):
     code: Optional[str] = Field(None, description="仅回测指定股票")
+    codes: Optional[List[str]] = Field(None, description="回测多只股票，优先于 code")
     force: bool = Field(False, description="强制重新计算")
     eval_window_days: Optional[int] = Field(None, ge=1, le=120, description="评估窗口（交易日数）")
     min_age_days: Optional[int] = Field(None, ge=0, le=365, description="分析记录最小天龄（0=不限）")
@@ -93,5 +94,25 @@ class PerformanceMetrics(BaseModel):
     ambiguous_rate: Optional[float] = None
     avg_days_to_first_hit: Optional[float] = None
 
+    sharpe_ratio: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    profit_factor: Optional[float] = None
+    avg_win_pct: Optional[float] = None
+    avg_loss_pct: Optional[float] = None
+
     advice_breakdown: Dict[str, Any] = Field(default_factory=dict)
     diagnostics: Dict[str, Any] = Field(default_factory=dict)
+
+
+class EquityCurvePoint(BaseModel):
+    date: str
+    cumulative_return_pct: float
+    drawdown_pct: float
+
+
+class EquityCurveResponse(BaseModel):
+    code: Optional[str] = None
+    eval_window_days: int
+    engine_version: str
+    total_trades: int
+    points: List[EquityCurvePoint] = Field(default_factory=list)

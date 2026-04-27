@@ -140,6 +140,8 @@ export interface ScreenerPerformanceResponse {
 export interface ScreenerTrackingUpdateResponse {
   updated: number;
   closed: number;
+  status?: string;
+  message?: string;
 }
 
 export interface ScreenerBacktestFeedbackResponse {
@@ -166,6 +168,25 @@ export interface WatchRemoveRequest {
 export interface WatchRemoveResponse {
   code: string;
   removed: number;
+}
+
+export interface WatchBatchCloseRequest {
+  codes: string[];
+  exitReason?: string;
+}
+
+export interface WatchBatchCloseResponse {
+  closed: number;
+  failed: number;
+}
+
+export interface WatchBatchRemoveRequest {
+  codes: string[];
+}
+
+export interface WatchBatchRemoveResponse {
+  removed: number;
+  failed: number;
 }
 
 export interface PoolStatusResponse {

@@ -84,7 +84,7 @@ function StrategyScoreBar({ breakdown }: { breakdown: Record<string, CategoryBre
       {entries.map(([key, val]) => {
         const pctVal = Math.min(100, Math.max(0, val.avgScore));
         const barColor =
-          pctVal >= 70 ? 'bg-emerald-400' : pctVal >= 50 ? 'bg-cyan' : pctVal >= 30 ? 'bg-amber-400' : 'bg-red-400';
+          pctVal >= 70 ? '#34d399' : pctVal >= 50 ? 'hsl(var(--primary))' : pctVal >= 30 ? '#fbbf24' : '#f87171';
         return (
           <div key={key} className="flex items-center gap-2 text-[11px]">
             <span className="w-10 shrink-0 text-right text-secondary-text">
@@ -92,8 +92,8 @@ function StrategyScoreBar({ breakdown }: { breakdown: Record<string, CategoryBre
             </span>
             <div className="flex-1 h-2 rounded-full bg-border/30 overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all duration-500 ${barColor}`}
-                style={{ width: `${pctVal}%` }}
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${pctVal}%`, background: barColor }}
               />
             </div>
             <span className="w-8 shrink-0 font-mono tabular-nums text-secondary-text">
@@ -222,7 +222,7 @@ const ScreenerPage: React.FC = () => {
   const [isLoadingPerf, setIsLoadingPerf] = useState(false);
 
   // Backtest feedback
-  const [isFeedbacking, setIsFeedbacking] = useState(false);
+  const [isBatchOperating, setIsBatchOperating] = useState(false);
 
   const [poolStatus, setPoolStatus] = useState<PoolStatusResponse | null>(null);
   const [poolSummary, setPoolSummary] = useState<PoolSummaryResponse | null>(null);
@@ -232,7 +232,7 @@ const ScreenerPage: React.FC = () => {
 
   const [screenerProgress, setScreenerProgress] = useState<ScreenerProgress | null>(null);
 
-  const { poolProgress: ssePoolProgress, screenerProgress: sseScreenerProgress } = useScreenerStream({
+  const { poolProgress: ssePoolProgress } = useScreenerStream({
     onPoolProgress: (progress) => {
       if (progress.status === 'completed') {
         fetchPoolStatus();
@@ -448,6 +448,8 @@ const ScreenerPage: React.FC = () => {
     URL.revokeObjectURL(url);
   }, [watchList]);
 
+  const hasAutoExpanded = useRef(false);
+
   const fetchInsights = useCallback(async () => {
     setIsLoadingInsights(true);
     try {
@@ -458,7 +460,8 @@ const ScreenerPage: React.FC = () => {
         map[ins.code] = ins;
       }
       setInsightMap(map);
-      if (result.insights.length > 0 && expandedInsight.size === 0) {
+      if (result.insights.length > 0 && !hasAutoExpanded.current) {
+        hasAutoExpanded.current = true;
         setExpandedInsight(new Set(result.insights.slice(0, 3).map((ins) => ins.code)));
       }
     } catch {
@@ -466,19 +469,42 @@ const ScreenerPage: React.FC = () => {
     } finally {
       setIsLoadingInsights(false);
     }
-  }, [todayDate, expandedInsight.size]);
+  }, [todayDate]);
 
   const handleGenerateInsights = useCallback(async () => {
     setIsGeneratingInsights(true);
     try {
       await screenerApi.generateInsights();
-      setTimeout(() => fetchInsights(), 5000);
+      let retries = 0;
+      const pollInsights = async () => {
+        try {
+          const result = await screenerApi.getInsights(todayDate);
+          if (result.insights.length > 0 || retries >= 12) {
+            setInsights(result.insights);
+            const map: Record<string, ScreenerInsightItem> = {};
+            for (const ins of result.insights) {
+              map[ins.code] = ins;
+            }
+            setInsightMap(map);
+            setIsGeneratingInsights(false);
+          } else {
+            retries++;
+            setTimeout(pollInsights, 5000);
+          }
+        } catch {
+          retries++;
+          if (retries >= 12) {
+            setIsGeneratingInsights(false);
+          } else {
+            setTimeout(pollInsights, 5000);
+          }
+        }
+      };
+      setTimeout(pollInsights, 5000);
     } catch {
-      // ignore
-    } finally {
       setIsGeneratingInsights(false);
     }
-  }, [fetchInsights]);
+  }, [todayDate]);
 
   const toggleInsight = useCallback((code: string) => {
     setExpandedInsight(prev => {
@@ -493,6 +519,45 @@ const ScreenerPage: React.FC = () => {
     fetchInsights();
   }, [fetchInsights]);
 
+  const startStatusPolling = () => {
+    if (screenerPollRef.current) clearInterval(screenerPollRef.current);
+    screenerPollRef.current = setInterval(async () => {
+      try {
+        const status = await screenerApi.getRunStatus();
+        if (status.status === 'completed') {
+          if (screenerPollRef.current) {
+            clearInterval(screenerPollRef.current);
+            screenerPollRef.current = null;
+          }
+          if (status.dataFailures && status.dataFailures.length > 0) {
+            setDataFailures(status.dataFailures);
+          }
+          if (status.qualitySummary) {
+            setQualitySummary(status.qualitySummary);
+          }
+          setIsRunning(false);
+          await fetchTodayPicks();
+          if (activeTab === 'watch') await fetchWatchList();
+          if (activeTab === 'performance') await fetchPerformance();
+          fetchInsights();
+        } else if (status.status === 'failed') {
+          if (screenerPollRef.current) {
+            clearInterval(screenerPollRef.current);
+            screenerPollRef.current = null;
+          }
+          setIsRunning(false);
+          setRunError({ title: '选股失败', message: status.message || '选股执行失败', rawMessage: status.message || '', category: 'unknown' });
+        }
+      } catch {
+        if (screenerPollRef.current) {
+          clearInterval(screenerPollRef.current);
+          screenerPollRef.current = null;
+        }
+        setIsRunning(false);
+      }
+    }, 3000);
+  };
+
   const handleRun = async () => {
     setIsRunning(true);
     setRunError(null);
@@ -500,42 +565,7 @@ const ScreenerPage: React.FC = () => {
     try {
       const result = await screenerApi.run({ topN, scanMode });
       if (result.status === 'running') {
-        if (screenerPollRef.current) clearInterval(screenerPollRef.current);
-        screenerPollRef.current = setInterval(async () => {
-          try {
-            const status = await screenerApi.getRunStatus();
-            if (status.status === 'completed') {
-              if (screenerPollRef.current) {
-                clearInterval(screenerPollRef.current);
-                screenerPollRef.current = null;
-              }
-              if (status.dataFailures && status.dataFailures.length > 0) {
-                setDataFailures(status.dataFailures);
-              }
-              if (status.qualitySummary) {
-                setQualitySummary(status.qualitySummary);
-              }
-              setIsRunning(false);
-              await fetchTodayPicks();
-              if (activeTab === 'watch') await fetchWatchList();
-              if (activeTab === 'performance') await fetchPerformance();
-              fetchInsights();
-            } else if (status.status === 'failed') {
-              if (screenerPollRef.current) {
-                clearInterval(screenerPollRef.current);
-                screenerPollRef.current = null;
-              }
-              setIsRunning(false);
-              setRunError({ title: '选股失败', message: status.message || '选股执行失败', rawMessage: status.message || '', category: 'unknown' });
-            }
-          } catch {
-            if (screenerPollRef.current) {
-              clearInterval(screenerPollRef.current);
-              screenerPollRef.current = null;
-            }
-            setIsRunning(false);
-          }
-        }, 3000);
+        startStatusPolling();
       } else {
         if (result.dataFailures && result.dataFailures.length > 0) {
           setDataFailures(result.dataFailures);
@@ -549,33 +579,52 @@ const ScreenerPage: React.FC = () => {
         if (activeTab === 'performance') await fetchPerformance();
       }
     } catch (err) {
-      setRunError(getParsedApiError(err));
-      setIsRunning(false);
+      const parsed = getParsedApiError(err);
+      if (parsed.status === 409 || parsed.rawMessage?.includes('already_running')) {
+        startStatusPolling();
+      } else {
+        setRunError(parsed);
+        setIsRunning(false);
+      }
     }
   };
 
   const handleUpdateTracking = async () => {
     setIsUpdatingTracking(true);
     try {
-      await screenerApi.updateTracking();
-      await fetchWatchList();
+      const res = await screenerApi.updateTracking();
+      if (res.status === 'running') {
+        const poll = async () => {
+          try {
+            const statusRes = await screenerApi.getTrackingStatus();
+            await fetchWatchList();
+            if (statusRes.status === 'running') {
+              setTimeout(poll, 3000);
+            } else {
+              setIsUpdatingTracking(false);
+            }
+          } catch {
+            setIsUpdatingTracking(false);
+          }
+        };
+        setTimeout(poll, 3000);
+      } else {
+        await fetchWatchList();
+        setIsUpdatingTracking(false);
+      }
     } catch (err) {
       setPageError(getParsedApiError(err));
-    } finally {
       setIsUpdatingTracking(false);
     }
   };
 
-  const handleBacktestFeedback = async () => {
-    setIsFeedbacking(true);
-    try {
-      await screenerApi.applyBacktestFeedback();
-      await fetchWatchList();
-      await fetchPerformance();
-    } catch (err) {
-      setPageError(getParsedApiError(err));
-    } finally {
-      setIsFeedbacking(false);
+  const handleBacktestFeedback = () => {
+    const watching = watchList.filter((w) => w.status === 'watch');
+    const codes = watching.map((w) => w.code).filter(Boolean);
+    if (codes.length > 0) {
+      navigate(`/backtest?codes=${codes.join(',')}&autoRun=1`);
+    } else {
+      navigate('/backtest');
     }
   };
 
@@ -689,23 +738,20 @@ const ScreenerPage: React.FC = () => {
           )}
         </div>
         {dataFailures.length > 0 && (
-          <div className="mb-3 rounded-lg border border-warning/40 bg-warning/5 p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <AlertTriangle className="h-4 w-4 text-warning" />
-              <span className="text-sm font-medium text-warning">
+          <div className="mb-3 rounded-lg border border-white/10 bg-white/[0.02] px-3 py-2">
+            <details>
+              <summary className="cursor-pointer text-xs text-secondary-text hover:text-foreground transition-colors">
                 {dataFailures.length} 只股票历史数据获取失败，已降级为基础因子评分
-              </span>
-            </div>
-            <div className="flex flex-wrap gap-1.5">
-              {dataFailures.slice(0, 10).map((f) => (
-                <Tooltip key={f.code} content={`${f.name}(${f.code}): ${f.reason}`}>
-                  <span className="text-xs text-warning">{f.name || f.code}</span>
-                </Tooltip>
-              ))}
-              {dataFailures.length > 10 && (
-                <span className="text-xs text-secondary-text">+{dataFailures.length - 10} 更多</span>
-              )}
-            </div>
+              </summary>
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {dataFailures.slice(0, 10).map((f) => (
+                  <span key={f.code} className="text-xs text-muted-text">{f.name || f.code}</span>
+                ))}
+                {dataFailures.length > 10 && (
+                  <span className="text-xs text-muted-text">+{dataFailures.length - 10} 更多</span>
+                )}
+              </div>
+            </details>
           </div>
         )}
         <div className="screener-table-wrapper overflow-x-auto rounded-xl border border-border/40">
@@ -985,19 +1031,23 @@ const ScreenerPage: React.FC = () => {
     };
 
     const handleBatchClose = async () => {
-      for (const code of selectedWatchCodes) {
-        try { await screenerApi.closeWatch({ code }); } catch { /* ignore */ }
-      }
+      setIsBatchOperating(true);
+      try {
+        await screenerApi.batchCloseWatch(Array.from(selectedWatchCodes));
+      } catch { /* ignore */ }
       setSelectedWatchCodes(new Set());
       fetchWatchList();
+      setIsBatchOperating(false);
     };
 
     const handleBatchRemove = async () => {
-      for (const code of selectedWatchCodes) {
-        try { await screenerApi.removeWatch({ code }); } catch { /* ignore */ }
-      }
+      setIsBatchOperating(true);
+      try {
+        await screenerApi.batchRemoveWatch(Array.from(selectedWatchCodes));
+      } catch { /* ignore */ }
       setSelectedWatchCodes(new Set());
       fetchWatchList();
+      setIsBatchOperating(false);
     };
 
     const sortIcon = (key: typeof watchSortKey) => (
@@ -1023,17 +1073,19 @@ const ScreenerPage: React.FC = () => {
               <button
                 type="button"
                 onClick={handleBatchClose}
+                disabled={isBatchOperating}
                 className="btn-secondary flex items-center gap-1 text-xs text-warning"
               >
-                <XCircleIcon className="h-3.5 w-3.5" />
+                <XCircleIcon className={`h-3.5 w-3.5 ${isBatchOperating ? 'animate-spin' : ''}`} />
                 批量关闭
               </button>
               <button
                 type="button"
                 onClick={handleBatchRemove}
+                disabled={isBatchOperating}
                 className="btn-secondary flex items-center gap-1 text-xs text-danger"
               >
-                <Trash2 className="h-3.5 w-3.5" />
+                <Trash2 className={`h-3.5 w-3.5 ${isBatchOperating ? 'animate-spin' : ''}`} />
                 批量移除
               </button>
             </div>
@@ -1060,11 +1112,10 @@ const ScreenerPage: React.FC = () => {
           <button
             type="button"
             onClick={handleBacktestFeedback}
-            disabled={isFeedbacking}
             className="btn-secondary flex items-center gap-1.5 text-xs"
           >
-            <Target className={`h-3.5 w-3.5 ${isFeedbacking ? 'animate-spin' : ''}`} />
-            回测反馈
+            <Target className="h-3.5 w-3.5" />
+            回测反馈{watchList.filter((w) => w.status === 'watch').length > 0 ? ` (${watchList.filter((w) => w.status === 'watch').length})` : ''}
           </button>
           <button
             type="button"
@@ -1490,7 +1541,7 @@ const ScreenerPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setShowPoolPanel(!showPoolPanel)}
-                className="flex items-center gap-1.5 rounded-xl border border-cyan/30 bg-cyan/10 px-3 py-2 text-xs text-cyan transition-all hover:bg-cyan/20"
+                className="flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-secondary-text transition-all hover:bg-white/[0.06] hover:text-foreground"
               >
                 <svg className="h-3 w-3 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
@@ -1567,8 +1618,18 @@ const ScreenerPage: React.FC = () => {
           <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
         )}
 
+        {isRunning && !screenerProgress && (
+          <div className="sticky top-0 z-30 mt-3 rounded-xl border border-white/10 bg-elevated/80 p-4 backdrop-blur-sm">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 text-cyan animate-spin" />
+              <span className="text-sm font-medium text-foreground">选股进行中...</span>
+              <span className="text-xs text-secondary-text">等待进度数据</span>
+            </div>
+          </div>
+        )}
+
         {isRunning && screenerProgress && screenerProgress.status === 'running' && (
-          <div className="mt-3 rounded-xl border border-cyan/20 bg-cyan/5 p-4">
+          <div className="sticky top-0 z-30 mt-3 rounded-xl border border-white/10 bg-elevated/80 p-4 backdrop-blur-sm">
             <div className="flex items-center justify-between mb-3">
               <div className="flex items-center gap-2">
                 <Loader2 className="h-4 w-4 text-cyan animate-spin" />
@@ -1578,8 +1639,11 @@ const ScreenerPage: React.FC = () => {
             </div>
             <div className="h-2 w-full rounded-full bg-white/5 mb-3">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-cyan to-blue-500 transition-all duration-500"
-                style={{ width: Math.min(100, screenerProgress.progressPct) + '%' }}
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: Math.min(100, screenerProgress.progressPct) + '%',
+                  background: 'linear-gradient(to right, hsl(var(--primary)), hsl(var(--primary) / 0.6))',
+                }}
               />
             </div>
             <div className="text-xs text-secondary-text mb-2">{screenerProgress.message}</div>
@@ -1620,8 +1684,11 @@ const ScreenerPage: React.FC = () => {
                 </div>
                 <div className="h-2 w-full rounded-full bg-white/5">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-cyan to-blue-500 transition-all duration-500"
-                    style={{ width: Math.min(100, ssePoolProgress?.progressPct ?? poolStatus.progressPct) + '%' }}
+                    className="h-full rounded-full transition-all duration-500"
+                    style={{
+                      width: Math.min(100, ssePoolProgress?.progressPct ?? poolStatus.progressPct) + '%',
+                      background: 'linear-gradient(to right, hsl(var(--primary)), hsl(var(--primary) / 0.6))',
+                    }}
                   />
                 </div>
                 {ssePoolProgress && ssePoolProgress.steps.length > 0 && (
@@ -1671,8 +1738,8 @@ const ScreenerPage: React.FC = () => {
                       <div className="text-xs text-secondary-text mb-1.5">板块分布</div>
                       <div className="flex flex-wrap gap-1">
                         {Object.entries(poolSummary.boards).map(([board, count]) => (
-                          <span key={board} className="inline-flex items-center gap-1 rounded-md bg-cyan/10 px-2 py-0.5 text-xs text-cyan">
-                            {board} <span className="text-secondary-text">{count}</span>
+                          <span key={board} className="inline-flex items-center gap-1 rounded-md border border-white/5 bg-white/[0.03] px-2 py-0.5 text-xs text-secondary-text">
+                            {board} <span className="text-muted-text">{count}</span>
                           </span>
                         ))}
                       </div>
@@ -1681,8 +1748,8 @@ const ScreenerPage: React.FC = () => {
                       <div className="text-xs text-secondary-text mb-1.5">行业分布</div>
                       <div className="flex flex-wrap gap-1">
                         {Object.entries(poolSummary.industries).slice(0, 8).map(([ind, count]) => (
-                          <span key={ind} className="inline-flex items-center gap-1 rounded-md bg-blue-500/10 px-2 py-0.5 text-xs text-blue-400">
-                            {ind} <span className="text-secondary-text">{count}</span>
+                          <span key={ind} className="inline-flex items-center gap-1 rounded-md border border-white/5 bg-white/[0.03] px-2 py-0.5 text-xs text-secondary-text">
+                            {ind} <span className="text-muted-text">{count}</span>
                           </span>
                         ))}
                       </div>
@@ -1692,10 +1759,10 @@ const ScreenerPage: React.FC = () => {
                       <div className="flex flex-wrap gap-1">
                         {Object.entries(poolSummary.qualities).map(([q, count]) => {
                           const qLabel = q === 'premium' ? '优质' : q === 'standard' ? '标准' : '边缘';
-                          const qClass = q === 'premium' ? 'bg-success/10 text-success' : q === 'standard' ? 'bg-cyan/10 text-cyan' : 'bg-warning/10 text-warning';
+                          const qClass = q === 'premium' ? 'border-success/20 text-success' : q === 'standard' ? 'border-cyan/20 text-cyan' : 'border-warning/20 text-warning';
                           return (
-                            <span key={q} className={"inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs " + qClass}>
-                              {qLabel} <span className="text-secondary-text">{count}</span>
+                            <span key={q} className={"inline-flex items-center gap-1 rounded-md border bg-white/[0.03] px-2 py-0.5 text-xs " + qClass}>
+                              {qLabel} <span className="text-muted-text">{count}</span>
                             </span>
                           );
                         })}
@@ -1708,7 +1775,7 @@ const ScreenerPage: React.FC = () => {
                     type="button"
                     onClick={handleInitPool}
                     disabled={isInitingPool}
-                    className="rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5 text-xs text-cyan hover:bg-cyan/20 transition-all disabled:opacity-50"
+                    className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-secondary-text hover:bg-white/[0.06] hover:text-foreground transition-all disabled:opacity-50"
                   >
                     重新初始化
                   </button>
@@ -1723,7 +1790,7 @@ const ScreenerPage: React.FC = () => {
                   type="button"
                   onClick={handleInitPool}
                   disabled={isInitingPool}
-                  className="rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5 text-xs text-cyan hover:bg-cyan/20 transition-all disabled:opacity-50"
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-secondary-text hover:bg-white/[0.06] hover:text-foreground transition-all disabled:opacity-50"
                 >
                   重新初始化
                 </button>
@@ -1737,7 +1804,7 @@ const ScreenerPage: React.FC = () => {
                   type="button"
                   onClick={handleInitPool}
                   disabled={isInitingPool}
-                  className="rounded-lg border border-cyan/30 bg-cyan/10 px-3 py-1.5 text-xs text-cyan hover:bg-cyan/20 transition-all disabled:opacity-50"
+                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-1.5 text-xs text-secondary-text hover:bg-white/[0.06] hover:text-foreground transition-all disabled:opacity-50"
                 >
                   {isInitingPool ? '启动中...' : '开始初始化'}
                 </button>

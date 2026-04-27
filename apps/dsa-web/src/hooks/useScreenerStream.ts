@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export interface ScreenerStep {
   label: string;
@@ -40,9 +40,20 @@ export function useScreenerStream(options: UseScreenerStreamOptions = {}): UseSc
   const eventSourceRef = useRef<EventSource | null>(null);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const onPoolProgressRef = useRef(onPoolProgress);
+  const onScreenerProgressRef = useRef(onScreenerProgress);
 
-  const connect = useCallback(() => {
-    if (!enabled || !mountedRef.current) return;
+  useEffect(() => {
+    onPoolProgressRef.current = onPoolProgress;
+  }, [onPoolProgress]);
+
+  useEffect(() => {
+    onScreenerProgressRef.current = onScreenerProgress;
+  }, [onScreenerProgress]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    if (!enabled) return;
 
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
@@ -61,7 +72,7 @@ export function useScreenerStream(options: UseScreenerStreamOptions = {}): UseSc
         const data = JSON.parse(e.data) as ScreenerProgress;
         if (mountedRef.current) {
           setPoolProgress(data);
-          onPoolProgress?.(data);
+          onPoolProgressRef.current?.(data);
         }
       } catch { /* ignore parse errors */ }
     });
@@ -71,7 +82,7 @@ export function useScreenerStream(options: UseScreenerStreamOptions = {}): UseSc
         const data = JSON.parse(e.data) as ScreenerProgress;
         if (mountedRef.current) {
           setScreenerProgress(data);
-          onScreenerProgress?.(data);
+          onScreenerProgressRef.current?.(data);
         }
       } catch { /* ignore parse errors */ }
     });
@@ -86,34 +97,117 @@ export function useScreenerStream(options: UseScreenerStreamOptions = {}): UseSc
       eventSourceRef.current = null;
       if (mountedRef.current && enabled) {
         reconnectTimerRef.current = setTimeout(() => {
-          if (mountedRef.current && enabled) connect();
+          if (mountedRef.current && enabled) {
+            const newEs = new EventSource(url);
+            eventSourceRef.current = newEs;
+            setupListeners(newEs);
+          }
         }, 5000);
       }
     };
-  }, [enabled, onPoolProgress, onScreenerProgress]);
 
-  const reconnect = useCallback(() => {
-    if (reconnectTimerRef.current) {
-      clearTimeout(reconnectTimerRef.current);
-      reconnectTimerRef.current = null;
+    function setupListeners(sse: EventSource) {
+      sse.addEventListener('connected', () => {
+        if (mountedRef.current) setIsConnected(true);
+      });
+
+      sse.addEventListener('pool_progress', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as ScreenerProgress;
+          if (mountedRef.current) {
+            setPoolProgress(data);
+            onPoolProgressRef.current?.(data);
+          }
+        } catch { /* ignore */ }
+      });
+
+      sse.addEventListener('screener_progress', (e: MessageEvent) => {
+        try {
+          const data = JSON.parse(e.data) as ScreenerProgress;
+          if (mountedRef.current) {
+            setScreenerProgress(data);
+            onScreenerProgressRef.current?.(data);
+          }
+        } catch { /* ignore */ }
+      });
+
+      sse.addEventListener('heartbeat', () => {});
+
+      sse.onerror = () => {
+        if (mountedRef.current) setIsConnected(false);
+        sse.close();
+        eventSourceRef.current = null;
+        if (mountedRef.current && enabled) {
+          reconnectTimerRef.current = setTimeout(() => {
+            if (mountedRef.current && enabled) {
+              const retryEs = new EventSource(url);
+              eventSourceRef.current = retryEs;
+              setupListeners(retryEs);
+            }
+          }, 5000);
+        }
+      };
     }
-    connect();
-  }, [connect]);
 
-  useEffect(() => {
-    mountedRef.current = true;
-    if (enabled) connect();
     return () => {
       mountedRef.current = false;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
         eventSourceRef.current = null;
       }
     };
-  }, [enabled, connect]);
+  }, [enabled]);
+
+  const reconnect = () => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+    const url = `${API_BASE}/api/v1/screener/stream`;
+    const es = new EventSource(url);
+    eventSourceRef.current = es;
+    setIsConnected(false);
+
+    es.addEventListener('connected', () => {
+      if (mountedRef.current) setIsConnected(true);
+    });
+
+    es.addEventListener('pool_progress', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as ScreenerProgress;
+        if (mountedRef.current) {
+          setPoolProgress(data);
+          onPoolProgressRef.current?.(data);
+        }
+      } catch { /* ignore */ }
+    });
+
+    es.addEventListener('screener_progress', (e: MessageEvent) => {
+      try {
+        const data = JSON.parse(e.data) as ScreenerProgress;
+        if (mountedRef.current) {
+          setScreenerProgress(data);
+          onScreenerProgressRef.current?.(data);
+        }
+      } catch { /* ignore */ }
+    });
+
+    es.addEventListener('heartbeat', () => {});
+
+    es.onerror = () => {
+      if (mountedRef.current) setIsConnected(false);
+      es.close();
+      eventSourceRef.current = null;
+    };
+  };
 
   return { isConnected, poolProgress, screenerProgress, reconnect };
 }

@@ -33,11 +33,14 @@ class BacktestService:
         self,
         *,
         code: Optional[str] = None,
+        codes: Optional[List[str]] = None,
         force: bool = False,
         eval_window_days: Optional[int] = None,
         min_age_days: Optional[int] = None,
         limit: int = 200,
     ) -> Dict[str, Any]:
+        effective_code = None
+        effective_codes = codes if codes else ([code] if code else None)
         config = get_config()
 
         if eval_window_days is None:
@@ -47,15 +50,20 @@ class BacktestService:
 
         engine_version = getattr(config, "backtest_engine_version", "v1")
         neutral_band_pct = float(getattr(config, "backtest_neutral_band_pct", 2.0))
+        commission_rate = float(getattr(config, "backtest_commission_rate", 0.0003))
+        slippage_pct = float(getattr(config, "backtest_slippage_pct", 0.001))
 
         eval_config = EvaluationConfig(
             eval_window_days=int(eval_window_days),
             neutral_band_pct=neutral_band_pct,
             engine_version=str(engine_version),
+            commission_rate=commission_rate,
+            slippage_pct=slippage_pct,
         )
 
         candidates = self.repo.get_candidates(
-            code=code,
+            code=effective_code,
+            codes=effective_codes,
             min_age_days=int(min_age_days),
             limit=int(limit),
             eval_window_days=int(eval_window_days),
@@ -310,6 +318,56 @@ class BacktestService:
             self.get_summary(scope="overall", code=None, eval_window_days=eval_window_days)
         )
 
+    def get_equity_curve(
+        self,
+        *,
+        code: Optional[str] = None,
+        eval_window_days: Optional[int] = None,
+        analysis_date_from: Optional[date] = None,
+        analysis_date_to: Optional[date] = None,
+    ) -> Dict[str, Any]:
+        config = get_config()
+        engine_version = str(getattr(config, "backtest_engine_version", "v1"))
+        ew = int(eval_window_days) if eval_window_days is not None else None
+
+        rows = self.repo.list_results(
+            code=code,
+            eval_window_days=ew,
+            engine_version=engine_version,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+        )
+
+        completed = [
+            r for r in rows
+            if (r.eval_status or "") == "completed"
+            and r.analysis_date is not None
+            and r.simulated_return_pct is not None
+        ]
+        completed.sort(key=lambda r: r.analysis_date)
+
+        cumulative = 1.0
+        peak = 1.0
+        points = []
+        for r in completed:
+            cumulative *= (1 + float(r.simulated_return_pct) / 100)
+            if cumulative > peak:
+                peak = cumulative
+            drawdown = (peak - cumulative) / peak * 100
+            points.append({
+                "date": r.analysis_date.isoformat(),
+                "cumulative_return_pct": round((cumulative - 1) * 100, 4),
+                "drawdown_pct": round(drawdown, 2),
+            })
+
+        return {
+            "code": code,
+            "eval_window_days": eval_window_days or int(getattr(config, "backtest_eval_window_days", 10)),
+            "engine_version": engine_version,
+            "total_trades": len(completed),
+            "points": points,
+        }
+
     def get_stock_summary(self, code: str, *, eval_window_days: Optional[int] = None) -> Optional[Dict[str, Any]]:
         """Return per-stock backtest metrics normalized for Agent memory consumers."""
         return self._normalize_learning_summary(
@@ -429,6 +487,11 @@ class BacktestService:
             take_profit_trigger_rate=summary_data.get("take_profit_trigger_rate"),
             ambiguous_rate=summary_data.get("ambiguous_rate"),
             avg_days_to_first_hit=summary_data.get("avg_days_to_first_hit"),
+            sharpe_ratio=summary_data.get("sharpe_ratio"),
+            max_drawdown_pct=summary_data.get("max_drawdown_pct"),
+            profit_factor=summary_data.get("profit_factor"),
+            avg_win_pct=summary_data.get("avg_win_pct"),
+            avg_loss_pct=summary_data.get("avg_loss_pct"),
             advice_breakdown_json=json.dumps(summary_data.get("advice_breakdown") or {}, ensure_ascii=False),
             diagnostics_json=json.dumps(summary_data.get("diagnostics") or {}, ensure_ascii=False),
         )
@@ -499,6 +562,11 @@ class BacktestService:
             "take_profit_trigger_rate": row.take_profit_trigger_rate,
             "ambiguous_rate": row.ambiguous_rate,
             "avg_days_to_first_hit": row.avg_days_to_first_hit,
+            "sharpe_ratio": row.sharpe_ratio,
+            "max_drawdown_pct": row.max_drawdown_pct,
+            "profit_factor": row.profit_factor,
+            "avg_win_pct": row.avg_win_pct,
+            "avg_loss_pct": row.avg_loss_pct,
             "advice_breakdown": json.loads(row.advice_breakdown_json) if row.advice_breakdown_json else {},
             "diagnostics": json.loads(row.diagnostics_json) if row.diagnostics_json else {},
         }

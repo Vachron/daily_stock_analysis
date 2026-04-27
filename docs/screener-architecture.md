@@ -1,0 +1,116 @@
+# 选股系统逻辑框架
+
+```mermaid
+flowchart TB
+    subgraph 入口
+        A[用户触发选股] --> B{是否有股票池?}
+    end
+
+    subgraph 路径选择
+        B -->|有池/有筛选条件| C[股票池快速扫描]
+        B -->|无池| D[全市场扫描]
+    end
+
+    subgraph 股票池快速扫描路径
+        C --> C1[从 stock_pool_entries 筛选]
+        C1 --> C2[板块/行业/质量/标签过滤]
+        C2 --> C3[市场状态检测]
+        C3 --> C4[批量获取历史K线]
+        C4 --> C5[策略信号评分]
+        C5 --> C6[排序取 Top N]
+    end
+
+    subgraph 全市场扫描路径
+        D --> D1[获取全市场实时行情]
+        D1 --> D2[基础过滤<br/>ST排除/市值/PE/PB/换手率]
+        D2 --> D3[质量分级<br/>StockQualityClassifier]
+        D3 --> D4[市场状态检测<br/>MarketRegimeDetector]
+        D4 --> D5[策略信号评分排序<br/>StrategySignalExtractor]
+        D5 --> D6[持久化股票池<br/>stock_pool_entries]
+        D6 --> D7[排序取 Top N]
+    end
+
+    subgraph 质量分级引擎
+        D3 --> Q1[风险排除: ST/退市]
+        Q1 --> Q2[财务健康: PE/PB/盈利]
+        Q2 --> Q3[流动性: 换手率/市值]
+        Q3 --> Q4[价格稳定性: 波动率]
+        Q4 --> Q5{综合评分}
+        Q5 -->|≥140| Q6[premium 优质股]
+        Q5 -->|≥110| Q7[standard 标准股]
+        Q5 -->|≥80| Q8[speculative 投机股]
+        Q5 -->|<80| Q9[excluded 排除]
+    end
+
+    subgraph 市场状态检测
+        D4 --> M1[获取指数数据<br/>上证/深证/创业板]
+        M1 --> M2[计算技术指标<br/>MA/MACD/RSI/布林带]
+        M2 --> M3{判断市场状态}
+        M3 -->|趋势向上| M4[trending_up 上升趋势]
+        M3 -->|趋势向下| M5[trending_down 下降趋势]
+        M3 -->|震荡| M6[sideways 震荡市]
+        M3 -->|高波动| M7[volatile 高波动]
+    end
+
+    subgraph 策略信号评分体系
+        C5 --> S0[基础因子评分]
+        D5 --> S0
+        S0 --> S1[换手率因子]
+        S0 --> S2[动量因子]
+        S0 --> S3[估值因子 PE/PB]
+        S0 --> S4[市值因子]
+
+        S0 --> S5[26个策略信号提取<br/>StrategySignalExtractor]
+        S5 --> S6[趋势类 30%<br/>多头趋势/均线金叉/<br/>放量突破/缩量回踩]
+        S5 --> S7[反转类 20%<br/>MACD背离/RSI反转/<br/>布林回归]
+        S5 --> S8[形态类 12%<br/>晨星/W底/一阳三阴/<br/>涨停回踩]
+        S5 --> S9[框架类 12%<br/>海龟交易/箱体震荡/<br/>缠论/波浪理论]
+        S5 --> S10[量价类 10%<br/>放量反转/量价背离]
+        S5 --> S11[Alpha101 8%<br/>Alpha#001/#006/#053]
+        S5 --> S12[风控类 8%<br/>风险过滤器]
+    end
+
+    subgraph 动态权重调整
+        M4 --> W1[趋势策略权重↑<br/>反转策略权重↓]
+        M5 --> W2[反转策略权重↑<br/>趋势策略权重↓]
+        M6 --> W3[均衡权重]
+        M7 --> W4[风控权重↑<br/>高波动策略权重↓]
+        W1 --> S5
+        W2 --> S5
+        W3 --> S5
+        W4 --> S5
+    end
+
+    subgraph 评分融合与输出
+        S6 --> F1[融合评分计算<br/>fusion_score = Σ<br/>策略分×类别权重×动态权重]
+        S7 --> F1
+        S8 --> F1
+        S9 --> F1
+        S10 --> F1
+        S11 --> F1
+        S12 --> F1
+        F1 --> F2[排序 + Top N 截取]
+        F2 --> F3[持久化 screener_results]
+        F3 --> F4[前端展示<br/>选股结果页]
+    end
+
+    subgraph 观察池与回测
+        F4 --> O1[加入观察池<br/>status=watch]
+        O1 --> O2[持续追踪<br/>每日更新收益率/最大回撤]
+        O2 --> O3[回测反馈<br/>批量导入回测系统]
+        O3 --> O4[策略回测<br/>验证AI预测准确率]
+    end
+
+    C6 --> F2
+    D7 --> F2
+
+    style A fill:#00d4ff,stroke:#00d4ff,color:#000
+    style C fill:#0ea5e9,stroke:#0ea5e9,color:#fff
+    style D fill:#0ea5e9,stroke:#0ea5e9,color:#fff
+    style Q6 fill:#10b981,stroke:#10b981,color:#fff
+    style Q7 fill:#3b82f6,stroke:#3b82f6,color:#fff
+    style Q8 fill:#f59e0b,stroke:#f59e0b,color:#fff
+    style Q9 fill:#ef4444,stroke:#ef4444,color:#fff
+    style F4 fill:#8b5cf6,stroke:#8b5cf6,color:#fff
+    style O4 fill:#8b5cf6,stroke:#8b5cf6,color:#fff
+```

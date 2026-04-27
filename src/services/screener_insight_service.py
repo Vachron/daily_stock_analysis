@@ -55,6 +55,7 @@ class ScreenerInsightService:
         screen_date: date,
         market_regime: Optional[str] = None,
         market_regime_label: Optional[str] = None,
+        force_regenerate: bool = False,
     ) -> Dict[str, Any]:
         """为 Top N 候选股批量生成 AI 洞察。
 
@@ -75,7 +76,7 @@ class ScreenerInsightService:
             code = candidate.get("code", "")
             name = candidate.get("name", "")
             try:
-                if self._has_insight(screen_date, code):
+                if self._has_insight(screen_date, code) and not force_regenerate:
                     logger.debug("[ScreenerInsight] %s(%s) 洞察已存在，跳过", name, code)
                     continue
 
@@ -127,6 +128,7 @@ class ScreenerInsightService:
 
     def _fetch_news(self, search, code: str, name: str) -> str:
         if not search:
+            logger.warning("[ScreenerInsight] 搜索服务未初始化，%s(%s) 无法获取新闻", name, code)
             return ""
         try:
             resp = search.search_stock_news(code, name, max_results=5)
@@ -134,9 +136,12 @@ class ScreenerInsightService:
                 items = []
                 for r in resp.results[:5]:
                     items.append(f"- {r.title}: {getattr(r, 'snippet', '')}")
+                logger.info("[ScreenerInsight] %s(%s) 获取到 %d 条新闻", name, code, len(resp.results))
                 return "\n".join(items)
+            else:
+                logger.info("[ScreenerInsight] %s(%s) 搜索返回空结果", name, code)
         except Exception as exc:
-            logger.debug("[ScreenerInsight] 获取 %s 新闻失败: %s", code, exc)
+            logger.warning("[ScreenerInsight] 获取 %s(%s) 新闻失败: %s", name, code, exc)
         return ""
 
     def _build_prompt(

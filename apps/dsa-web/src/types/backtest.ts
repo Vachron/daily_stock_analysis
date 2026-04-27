@@ -7,6 +7,7 @@
 
 export interface BacktestRunRequest {
   code?: string;
+  codes?: string[];
   force?: boolean;
   evalWindowDays?: number;
   minAgeDays?: number;
@@ -94,6 +95,28 @@ export interface PerformanceMetrics {
   ambiguousRate?: number;
   avgDaysToFirstHit?: number;
 
+  sharpeRatio?: number;
+  maxDrawdownPct?: number;
+  profitFactor?: number;
+  avgWinPct?: number;
+  avgLossPct?: number;
+
   adviceBreakdown: Record<string, unknown>;
   diagnostics: Record<string, unknown>;
+}
+
+// ============ Equity Curve ============
+
+export interface EquityCurvePoint {
+  date: string;
+  cumulativeReturnPct: number;
+  drawdownPct: number;
+}
+
+export interface EquityCurveResponse {
+  code?: string;
+  evalWindowDays: number;
+  engineVersion: string;
+  totalTrades: number;
+  points: EquityCurvePoint[];
 }

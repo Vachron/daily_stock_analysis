@@ -15,6 +15,7 @@ from api.v1.schemas.backtest import (
     BacktestRunResponse,
     BacktestResultItem,
     BacktestResultsResponse,
+    EquityCurveResponse,
     PerformanceMetrics,
 )
 from api.v1.schemas.common import ErrorResponse
@@ -58,6 +59,7 @@ def run_backtest(
         service = BacktestService(db_manager)
         stats = service.run_backtest(
             code=request.code,
+            codes=request.codes,
             force=request.force,
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
@@ -211,4 +213,41 @@ def get_stock_performance(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询单股表现失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/equity-curve",
+    response_model=EquityCurveResponse,
+    responses={
+        200: {"description": "资金曲线数据"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="获取资金曲线",
+    description="获取回测资金曲线（累计收益率+回撤曲线），按分析日期排序",
+)
+def get_equity_curve(
+    code: Optional[str] = Query(None, description="股票代码筛选"),
+    eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口过滤"),
+    analysis_date_from: Optional[date] = Query(None, description="分析日期起始（含）"),
+    analysis_date_to: Optional[date] = Query(None, description="分析日期结束（含）"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> EquityCurveResponse:
+    try:
+        _validate_analysis_date_range(analysis_date_from, analysis_date_to)
+        service = BacktestService(db_manager)
+        data = service.get_equity_curve(
+            code=code,
+            eval_window_days=eval_window_days,
+            analysis_date_from=analysis_date_from,
+            analysis_date_to=analysis_date_to,
+        )
+        return EquityCurveResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"查询资金曲线失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"查询资金曲线失败: {str(exc)}"},
         )

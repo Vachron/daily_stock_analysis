@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from dataclasses import dataclass, field
@@ -47,6 +48,7 @@ class ScreenerConfig:
     pool_qualities: Optional[List[str]] = None
     pool_tags: Optional[List[str]] = None
     pool_min_base_score: float = 0.0
+    pool_scan_limit: int = 2000
 
 
 @dataclass
@@ -100,7 +102,23 @@ class ScreenerEngine:
     def run(self, demo: bool = False) -> ScreenerRunResult:
         """Execute the full screening pipeline."""
         cfg = self.config
+
+        scan_mode_to_qualities = {
+            "premium": ["premium"],
+            "quality_only": ["premium", "standard"],
+            "standard": ["standard", "premium"],
+        }
+        if cfg.scan_mode in scan_mode_to_qualities and not cfg.pool_qualities:
+            cfg.pool_qualities = scan_mode_to_qualities[cfg.scan_mode]
+
         use_pool = any([cfg.pool_boards, cfg.pool_industries, cfg.pool_qualities, cfg.pool_tags, cfg.pool_min_base_score > 0])
+
+        if not use_pool:
+            from src.core.stock_pool import StockPoolInitializer
+            pool = StockPoolInitializer.get_instance()
+            if pool and pool.is_initialized():
+                use_pool = True
+                logger.info("[Screener] 股票池已初始化，自动使用股票池扫描模式")
 
         if use_pool:
             return self._run_pool_scan(demo=demo)
@@ -134,13 +152,14 @@ class ScreenerEngine:
         )
 
         pool = StockPoolInitializer.get_instance()
+        scan_limit = 0 if cfg.pool_qualities else cfg.pool_scan_limit
         pool_entries = pool.get_pool_codes(
             boards=cfg.pool_boards,
             industries=cfg.pool_industries,
             qualities=cfg.pool_qualities,
             tags=cfg.pool_tags,
             min_base_score=cfg.pool_min_base_score,
-            limit=500,
+            limit=scan_limit,
         )
 
         if not pool_entries:
@@ -210,7 +229,23 @@ class ScreenerEngine:
 
     def _run_full_scan(self, demo: bool = False) -> ScreenerRunResult:
         """Full-market scan (original pipeline)."""
+        from src.core.screener_progress import ScreenerStep
+
         logger.info("[Screener] 开始全市场选股扫描 (模式=%s)...", self.config.scan_mode)
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=0,
+            message="正在获取全市场行情数据...",
+            stage="fetch_quotes",
+            steps=[
+                ScreenerStep(label="获取行情数据", status="running", detail=""),
+                ScreenerStep(label="基础过滤", status="pending", detail=""),
+                ScreenerStep(label="质量分级", status="pending", detail=""),
+                ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                ScreenerStep(label="策略评分排序", status="pending", detail=""),
+            ],
+        )
 
         if demo:
             raw_df = self._generate_demo_data()
@@ -219,15 +254,69 @@ class ScreenerEngine:
             raw_df = self._fetch_full_market_quotes()
             if raw_df is None or raw_df.empty:
                 logger.warning("[Screener] 无法获取全市场行情数据")
+                self._emit_screener_progress(
+                    status="failed",
+                    progress_pct=0,
+                    message="无法获取全市场行情数据",
+                    stage="fetch_quotes",
+                    steps=[
+                        ScreenerStep(label="获取行情数据", status="failed", detail="数据获取失败"),
+                        ScreenerStep(label="基础过滤", status="pending", detail=""),
+                        ScreenerStep(label="质量分级", status="pending", detail=""),
+                        ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                        ScreenerStep(label="策略评分排序", status="pending", detail=""),
+                    ],
+                )
                 return ScreenerRunResult()
 
         logger.info("[Screener] 获取到 %d 只股票行情数据", len(raw_df))
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=15,
+            message=f"获取到 {len(raw_df)} 只股票，正在进行基础过滤...",
+            stage="basic_filter",
+            steps=[
+                ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                ScreenerStep(label="基础过滤", status="running", detail=""),
+                ScreenerStep(label="质量分级", status="pending", detail=""),
+                ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                ScreenerStep(label="策略评分排序", status="pending", detail=""),
+            ],
+        )
 
         filtered = self._apply_basic_filters(raw_df)
         logger.info("[Screener] 基础过滤后剩余 %d 只", len(filtered))
 
         if filtered.empty:
+            self._emit_screener_progress(
+                status="completed",
+                progress_pct=100,
+                message="基础过滤后无符合条件的股票",
+                stage="basic_filter",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                    ScreenerStep(label="基础过滤", status="completed", detail="0 只通过"),
+                    ScreenerStep(label="质量分级", status="pending", detail=""),
+                    ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                    ScreenerStep(label="策略评分排序", status="pending", detail=""),
+                ],
+            )
             return ScreenerRunResult()
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=25,
+            message=f"基础过滤后 {len(filtered)} 只，正在进行质量分级...",
+            stage="quality_classify",
+            steps=[
+                ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                ScreenerStep(label="基础过滤", status="completed", detail=f"{len(filtered)} 只通过"),
+                ScreenerStep(label="质量分级", status="running", detail=""),
+                ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                ScreenerStep(label="策略评分排序", status="pending", detail=""),
+            ],
+        )
 
         from src.core.stock_quality_classifier import StockQualityClassifier
         classifier = StockQualityClassifier(scan_mode=self.config.scan_mode)
@@ -246,7 +335,34 @@ class ScreenerEngine:
         )
 
         if quality_df.empty:
+            self._emit_screener_progress(
+                status="completed",
+                progress_pct=100,
+                message="质量分级后无符合条件的股票",
+                stage="quality_classify",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                    ScreenerStep(label="基础过滤", status="completed", detail=f"{len(filtered)} 只通过"),
+                    ScreenerStep(label="质量分级", status="completed", detail="0 只通过"),
+                    ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                    ScreenerStep(label="策略评分排序", status="pending", detail=""),
+                ],
+            )
             return ScreenerRunResult(quality_summary=quality_summary)
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=40,
+            message=f"质量分级后 {len(quality_df)} 只，正在检测市场状态...",
+            stage="regime_detect",
+            steps=[
+                ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                ScreenerStep(label="基础过滤", status="completed", detail=f"{len(filtered)} 只通过"),
+                ScreenerStep(label="质量分级", status="completed", detail=f"{len(quality_df)} 只通过"),
+                ScreenerStep(label="市场状态检测", status="running", detail=""),
+                ScreenerStep(label="策略评分排序", status="pending", detail=""),
+            ],
+        )
 
         regime_result = self._detect_market_regime()
         logger.info(
@@ -261,6 +377,20 @@ class ScreenerEngine:
             if optimized_weights:
                 optimized_applied = True
                 logger.info("[Screener] 使用优化后的策略权重 (%d 个策略)", len(optimized_weights))
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=50,
+            message=f"市场状态: {regime_result.label}，正在评分排序 {len(quality_df)} 只股票...",
+            stage="score_rank",
+            steps=[
+                ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                ScreenerStep(label="基础过滤", status="completed", detail=f"{len(filtered)} 只通过"),
+                ScreenerStep(label="质量分级", status="completed", detail=f"{len(quality_df)} 只通过"),
+                ScreenerStep(label="市场状态检测", status="completed", detail=regime_result.label),
+                ScreenerStep(label="策略评分排序", status="running", detail=""),
+            ],
+        )
 
         candidates, failures, history_cache = self._score_and_rank(
             quality_df,
@@ -277,6 +407,21 @@ class ScreenerEngine:
         logger.info("[Screener] 选出 Top %d 只股票", len(top))
         for c in top:
             logger.info("  #%d %s(%s) 评分=%.2f [%s]", c.rank, c.name, c.code, c.score, c.quality_tier_label)
+
+        self._emit_screener_progress(
+            status="completed",
+            progress_pct=100,
+            message=f"选股完成，共选出 {len(top)} 只股票",
+            stage="done",
+            steps=[
+                ScreenerStep(label="获取行情数据", status="completed", detail=f"{len(raw_df)} 只"),
+                ScreenerStep(label="基础过滤", status="completed", detail=f"{len(filtered)} 只通过"),
+                ScreenerStep(label="质量分级", status="completed", detail=f"{len(quality_df)} 只通过"),
+                ScreenerStep(label="市场状态检测", status="completed", detail=regime_result.label),
+                ScreenerStep(label="策略评分排序", status="completed", detail=f"Top {len(top)}"),
+            ],
+            extra={"total_candidates": len(top)},
+        )
 
         if failures:
             logger.warning("[Screener] %d 只股票历史数据获取失败", len(failures))
@@ -340,7 +485,7 @@ class ScreenerEngine:
             except Exception as e:
                 return code, None, str(e)
 
-        max_workers = min(8, max(2, total // 20))
+        max_workers = min(16, max(4, total // 20))
         fetched = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_map = {executor.submit(_fetch_one, e): e for e in pool_entries}
@@ -405,16 +550,25 @@ class ScreenerEngine:
             turnover_rate = entry.get("turnover_rate", 0)
             pe_ratio = entry.get("pe_ratio", 0)
             pb_ratio = entry.get("pb_ratio", 0)
-            base_score = entry.get("base_score", 0)
+            pct_chg = entry.get("pct_chg", 0)
+
+            base_score = 0.0
+            base_signals: Dict[str, Any] = {}
+            base_score += self._score_turnover(turnover_rate, base_signals)
+            base_score += self._score_momentum(pct_chg, base_signals)
+            base_score += self._score_valuation(pe_ratio, pb_ratio, base_signals)
+            base_score += self._score_market_cap(market_cap, base_signals)
 
             strategy_scores: Dict[str, Any] = {}
             hist_df = history_cache.get(code)
 
             realtime_info = {
                 "turnover_rate": turnover_rate,
-                "pct_chg": 0,
+                "pct_chg": pct_chg,
                 "price": price,
                 "market_cap": market_cap,
+                "pe_ratio": pe_ratio,
+                "pb_ratio": pb_ratio,
             }
 
             fail_reason = ""
@@ -835,10 +989,20 @@ class ScreenerEngine:
             ))
 
             processed += 1
-            if processed % 200 == 0:
-                logger.debug(
-                    "[Screener] 已评分 %d/%d 只股票 (跳过失败 %d 只)",
-                    processed, total, skipped_count,
+            if processed % 50 == 0 or processed == total:
+                pct = 50 + (processed / total) * 45
+                self._emit_screener_progress(
+                    status="running",
+                    progress_pct=pct,
+                    message=f"评分排序中: {processed}/{total}",
+                    stage="score_rank",
+                    steps=[
+                        ScreenerStep(label="获取行情数据", status="completed", detail=""),
+                        ScreenerStep(label="基础过滤", status="completed", detail=""),
+                        ScreenerStep(label="质量分级", status="completed", detail=""),
+                        ScreenerStep(label="市场状态检测", status="completed", detail=""),
+                        ScreenerStep(label="策略评分排序", status="running", detail=f"{processed}/{total}"),
+                    ],
                 )
 
         if skipped_count > 0:

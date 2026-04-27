@@ -5,18 +5,15 @@ import type {
   BacktestRunResponse,
   BacktestResultsResponse,
   BacktestResultItem,
+  EquityCurveResponse,
   PerformanceMetrics,
 } from '../types/backtest';
 
-// ============ API ============
-
 export const backtestApi = {
-  /**
-   * Trigger backtest evaluation
-   */
   run: async (params: BacktestRunRequest = {}): Promise<BacktestRunResponse> => {
     const requestData: Record<string, unknown> = {};
     if (params.code) requestData.code = params.code;
+    if (params.codes && params.codes.length > 0) requestData.codes = params.codes;
     if (params.force) requestData.force = params.force;
     if (params.evalWindowDays) requestData.eval_window_days = params.evalWindowDays;
     if (params.minAgeDays != null) requestData.min_age_days = params.minAgeDays;
@@ -29,9 +26,6 @@ export const backtestApi = {
     return toCamelCase<BacktestRunResponse>(response.data);
   },
 
-  /**
-   * Get paginated backtest results
-   */
   getResults: async (params: {
     code?: string;
     evalWindowDays?: number;
@@ -62,9 +56,6 @@ export const backtestApi = {
     };
   },
 
-  /**
-   * Get overall performance metrics
-   */
   getOverallPerformance: async (params: {
     evalWindowDays?: number;
     analysisDateFrom?: string;
@@ -89,9 +80,6 @@ export const backtestApi = {
     }
   },
 
-  /**
-   * Get per-stock performance metrics
-   */
   getStockPerformance: async (code: string, params: {
     evalWindowDays?: number;
     analysisDateFrom?: string;
@@ -114,5 +102,24 @@ export const backtestApi = {
       }
       throw err;
     }
+  },
+
+  getEquityCurve: async (params: {
+    code?: string;
+    evalWindowDays?: number;
+    analysisDateFrom?: string;
+    analysisDateTo?: string;
+  } = {}): Promise<EquityCurveResponse> => {
+    const queryParams: Record<string, string | number> = {};
+    if (params.code) queryParams.code = params.code;
+    if (params.evalWindowDays) queryParams.eval_window_days = params.evalWindowDays;
+    if (params.analysisDateFrom) queryParams.analysis_date_from = params.analysisDateFrom;
+    if (params.analysisDateTo) queryParams.analysis_date_to = params.analysisDateTo;
+
+    const response = await apiClient.get<Record<string, unknown>>(
+      '/api/v1/backtest/equity-curve',
+      { params: queryParams },
+    );
+    return toCamelCase<EquityCurveResponse>(response.data);
   },
 };

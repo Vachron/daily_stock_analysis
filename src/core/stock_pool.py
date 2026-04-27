@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -171,7 +172,37 @@ class StockPoolInitializer:
                 ],
             )
             self._update_progress(status="fetching_quotes")
-            raw_df = self._fetch_full_market_quotes()
+
+            fetch_progress_stop = threading.Event()
+            fetch_progress_pct = [0.0]
+
+            def _tick_fetch_progress():
+                while not fetch_progress_stop.is_set():
+                    fetch_progress_stop.wait(2)
+                    if fetch_progress_stop.is_set():
+                        break
+                    fetch_progress_pct[0] = min(fetch_progress_pct[0] + 1.5, 9)
+                    self._emit_progress(
+                        status="running",
+                        progress_pct=fetch_progress_pct[0],
+                        message="正在获取全市场行情数据...",
+                        stage="fetching_quotes",
+                        steps=[
+                            ScreenerStep(label="获取行情数据", status="running", detail=f"已等待 {int(fetch_progress_pct[0] / 1.5 * 2)}s"),
+                            ScreenerStep(label="基础过滤", status="pending", detail=""),
+                            ScreenerStep(label="分类打标签", status="pending", detail=""),
+                            ScreenerStep(label="持久化存储", status="pending", detail=""),
+                        ],
+                    )
+
+            fetch_tick_thread = threading.Thread(target=_tick_fetch_progress, daemon=True)
+            fetch_tick_thread.start()
+
+            try:
+                raw_df = self._fetch_full_market_quotes()
+            finally:
+                fetch_progress_stop.set()
+                fetch_tick_thread.join(timeout=1)
             if raw_df is None or raw_df.empty:
                 detail = "; ".join(self._last_fetch_errors) if self._last_fetch_errors else "未知原因"
                 self._finish_with_error(version, f"无法获取全市场行情数据: {detail}")
@@ -628,8 +659,8 @@ class StockPoolInitializer:
         price_col = self._detect_column(result, ['最新价', '收盘价', 'price', 'close'])
         market_cap_col = self._detect_column(result, ['总市值', 'market_cap'])
         turnover_col = self._detect_column(result, ['换手率', 'turnover_rate'])
-        pe_col = self._detect_column(result, ['市盈率-动态', 'pe_ratio', '市盈率'])
-        pb_col = self._detect_column(result, ['市净率', 'pb_ratio'])
+        pe_col = self._detect_column(result, ['市盈率-动态', '动态市盈率', 'pe_ratio', '市盈率'])
+        pb_col = self._detect_column(result, ['市净率', 'pb_ratio', '动态市净率'])
         pct_chg_col = self._detect_column(result, ['涨跌幅', 'change_pct'])
 
         if code_col is None:
@@ -657,12 +688,12 @@ class StockPoolInitializer:
             result = result[(result['_turnover_rate'] >= 0.3)]
 
         if pe_col:
-            result['_pe_ratio'] = pd.to_numeric(result[pe_col], errors='coerce')
+            result['_pe_ratio'] = pd.to_numeric(result[pe_col], errors='coerce').fillna(0)
         else:
             result['_pe_ratio'] = 0.0
 
         if pb_col:
-            result['_pb_ratio'] = pd.to_numeric(result[pb_col], errors='coerce')
+            result['_pb_ratio'] = pd.to_numeric(result[pb_col], errors='coerce').fillna(0)
         else:
             result['_pb_ratio'] = 0.0
 
@@ -809,8 +840,10 @@ class StockPoolInitializer:
             price = float(row.get('_price', 0) or 0)
             market_cap = float(row.get('_market_cap', 0) or 0)
             turnover = float(row.get('_turnover_rate', 0) or 0)
-            pe = float(row.get('_pe_ratio', 0) or 0)
-            pb = float(row.get('_pb_ratio', 0) or 0)
+            pe_raw = row.get('_pe_ratio', 0)
+            pe = 0.0 if (pe_raw is None or (isinstance(pe_raw, float) and math.isnan(pe_raw))) else float(pe_raw or 0)
+            pb_raw = row.get('_pb_ratio', 0)
+            pb = 0.0 if (pb_raw is None or (isinstance(pb_raw, float) and math.isnan(pb_raw))) else float(pb_raw or 0)
             pct_chg = float(row.get('_pct_chg', 0) or 0)
 
             board = self._classify_board(code)
@@ -877,6 +910,7 @@ class StockPoolInitializer:
                 "pb_ratio": pb,
                 "price": price,
                 "turnover_rate": turnover,
+                "pct_chg": pct_chg,
             })
 
             processed = idx + 1
@@ -913,6 +947,11 @@ class StockPoolInitializer:
                     else:
                         session.add(StockPoolEntry(**e))
                 session.commit()
+
+    def is_initialized(self) -> bool:
+        with self.db.session_scope() as session:
+            meta = session.query(StockPoolMeta).filter_by(status="completed").first()
+            return meta is not None
 
     def get_pool_status(self) -> Dict[str, Any]:
         """Return the latest pool status for the UI."""
@@ -1023,7 +1062,7 @@ class StockPoolInitializer:
                 q = q.filter(StockPoolEntry.base_score >= min_base_score)
 
             q = q.order_by(StockPoolEntry.base_score.desc())
-            entries = q.limit(limit).all()
+            entries = q.limit(limit).all() if limit > 0 else q.all()
 
             results = []
             for e in entries:
@@ -1045,6 +1084,7 @@ class StockPoolInitializer:
                     "pb_ratio": e.pb_ratio,
                     "price": e.price,
                     "turnover_rate": e.turnover_rate,
+                    "pct_chg": e.pct_chg or 0,
                 })
 
             return results

@@ -7,6 +7,7 @@ objects that look like daily OHLC bars.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Dict, Iterable, List, Optional, Protocol, Sequence
@@ -45,6 +46,8 @@ class EvaluationConfig:
     eval_window_days: int
     neutral_band_pct: float = 2.0
     engine_version: str = "v1"
+    commission_rate: float = 0.0003
+    slippage_pct: float = 0.001
 
 
 class BacktestEngine:
@@ -203,7 +206,10 @@ class BacktestEngine:
         elif simulated_exit_price is None:
             simulated_return_pct = None
         else:
-            simulated_return_pct = (simulated_exit_price - start_price) / start_price * 100
+            raw_return_pct = (simulated_exit_price - start_price) / start_price * 100
+            entry_cost_pct = (config.commission_rate + config.slippage_pct) * 100
+            exit_cost_pct = config.commission_rate * 100
+            simulated_return_pct = round(raw_return_pct - entry_cost_pct - exit_cost_pct, 4)
 
         return {
             "analysis_date": analysis_date,
@@ -322,6 +328,13 @@ class BacktestEngine:
         advice_breakdown = cls._compute_advice_breakdown(completed)
         diagnostics = cls._compute_diagnostics(results_list)
 
+        simulated_returns = [float(r.simulated_return_pct) for r in completed if r.simulated_return_pct is not None]
+        sharpe_ratio = cls._compute_sharpe_ratio(simulated_returns)
+        max_drawdown_pct = cls._compute_max_drawdown(simulated_returns)
+        profit_factor = cls._compute_profit_factor(simulated_returns)
+        avg_win_pct = cls._average([r for r in simulated_returns if r > 0])
+        avg_loss_pct = cls._average([r for r in simulated_returns if r < 0])
+
         return {
             "scope": scope,
             "code": code,
@@ -344,6 +357,11 @@ class BacktestEngine:
             "take_profit_trigger_rate": take_profit_trigger_rate,
             "ambiguous_rate": ambiguous_rate,
             "avg_days_to_first_hit": avg_days_to_first_hit,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown_pct": max_drawdown_pct,
+            "profit_factor": profit_factor,
+            "avg_win_pct": avg_win_pct,
+            "avg_loss_pct": avg_loss_pct,
             "advice_breakdown": advice_breakdown,
             "diagnostics": diagnostics,
         }
@@ -553,3 +571,40 @@ class BacktestEngine:
             "eval_status": status_counts,
             "first_hit": first_hit_counts,
         }
+
+    @staticmethod
+    def _compute_sharpe_ratio(returns: List[float], risk_free_rate: float = 0.0) -> Optional[float]:
+        if len(returns) < 2:
+            return None
+        mean_ret = sum(returns) / len(returns)
+        variance = sum((r - mean_ret) ** 2 for r in returns) / (len(returns) - 1)
+        std_dev = math.sqrt(variance)
+        if std_dev == 0:
+            return None
+        annualized_mean = mean_ret * 252
+        annualized_std = std_dev * math.sqrt(252)
+        return round((annualized_mean - risk_free_rate) / annualized_std, 4)
+
+    @staticmethod
+    def _compute_max_drawdown(returns: List[float]) -> Optional[float]:
+        if not returns:
+            return None
+        cumulative = 1.0
+        peak = 1.0
+        max_dd = 0.0
+        for r in returns:
+            cumulative *= (1 + r / 100)
+            if cumulative > peak:
+                peak = cumulative
+            dd = (peak - cumulative) / peak * 100
+            if dd > max_dd:
+                max_dd = dd
+        return round(max_dd, 2)
+
+    @staticmethod
+    def _compute_profit_factor(returns: List[float]) -> Optional[float]:
+        gross_profit = sum(r for r in returns if r > 0)
+        gross_loss = abs(sum(r for r in returns if r < 0))
+        if gross_loss == 0:
+            return None if gross_profit == 0 else round(gross_profit, 4)
+        return round(gross_profit / gross_loss, 4)

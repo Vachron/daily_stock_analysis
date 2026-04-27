@@ -381,6 +381,13 @@ class BacktestSummary(Base):
     ambiguous_rate = Column(Float)
     avg_days_to_first_hit = Column(Float)
 
+    # 风险与收益指标
+    sharpe_ratio = Column(Float)
+    max_drawdown_pct = Column(Float)
+    profit_factor = Column(Float)
+    avg_win_pct = Column(Float)
+    avg_loss_pct = Column(Float)
+
     # 诊断字段（JSON 字符串）
     advice_breakdown_json = Column(Text)
     diagnostics_json = Column(Text)
@@ -729,6 +736,7 @@ class StockPoolEntry(Base):
     pb_ratio = Column(Float)
     price = Column(Float)
     turnover_rate = Column(Float)
+    pct_chg = Column(Float, default=0.0)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
 
     __table_args__ = (
@@ -828,6 +836,9 @@ class DatabaseManager:
         # 创建所有表
         Base.metadata.create_all(self._engine)
 
+        self._ensure_stock_pool_pct_chg()
+        self._ensure_backtest_summary_risk_columns()
+
         self._initialized = True
         logger.info(f"数据库初始化完成: {db_url}")
 
@@ -840,7 +851,49 @@ class DatabaseManager:
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
-    
+
+    def _ensure_stock_pool_pct_chg(self):
+        import sqlalchemy as sa
+        try:
+            with self._engine.connect() as conn:
+                result = conn.execute(sa.text(
+                    "SELECT COUNT(*) FROM pragma_table_info('stock_pool_entries') "
+                    "WHERE name='pct_chg'"
+                ))
+                if result.scalar() == 0:
+                    conn.execute(sa.text(
+                        "ALTER TABLE stock_pool_entries ADD COLUMN pct_chg FLOAT DEFAULT 0.0"
+                    ))
+                    conn.commit()
+                    logger.info("[DB] 已为 stock_pool_entries 添加 pct_chg 列")
+        except Exception as e:
+            logger.warning("[DB] 检查/添加 pct_chg 列失败: %s", e)
+
+    def _ensure_backtest_summary_risk_columns(self):
+        import sqlalchemy as sa
+        new_columns = [
+            ("sharpe_ratio", "FLOAT"),
+            ("max_drawdown_pct", "FLOAT"),
+            ("profit_factor", "FLOAT"),
+            ("avg_win_pct", "FLOAT"),
+            ("avg_loss_pct", "FLOAT"),
+        ]
+        try:
+            with self._engine.connect() as conn:
+                for col_name, col_type in new_columns:
+                    result = conn.execute(sa.text(
+                        f"SELECT COUNT(*) FROM pragma_table_info('backtest_summaries') "
+                        f"WHERE name='{col_name}'"
+                    ))
+                    if result.scalar() == 0:
+                        conn.execute(sa.text(
+                            f"ALTER TABLE backtest_summaries ADD COLUMN {col_name} {col_type}"
+                        ))
+                        conn.commit()
+                        logger.info("[DB] 已为 backtest_summaries 添加 %s 列", col_name)
+        except Exception as e:
+            logger.warning("[DB] 检查/添加 backtest_summaries 风险指标列失败: %s", e)
+
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（用于测试）"""
