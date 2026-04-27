@@ -11,7 +11,7 @@ Quality dimensions:
 Quality tiers:
 - premium: 优质蓝筹/白马股，基本面优秀
 - standard: 基本面正常，可正常扫描
-- marginal: 基本面偏弱，需谨慎
+- speculative: 投机/成长股，含亏损/高估值，有潜力但风险较高
 - excluded: 基本面极差或高风险，不扫描
 """
 
@@ -27,13 +27,13 @@ logger = logging.getLogger(__name__)
 
 TIER_PREMIUM = "premium"
 TIER_STANDARD = "standard"
-TIER_MARGINAL = "marginal"
+TIER_SPECULATIVE = "speculative"
 TIER_EXCLUDED = "excluded"
 
 TIER_LABELS = {
     TIER_PREMIUM: "优质股",
     TIER_STANDARD: "标准股",
-    TIER_MARGINAL: "边缘股",
+    TIER_SPECULATIVE: "投机股",
     TIER_EXCLUDED: "排除",
 }
 
@@ -44,8 +44,8 @@ SCAN_MODE_FULL = "full"
 
 SCAN_MODE_DESCRIPTIONS = {
     SCAN_MODE_PREMIUM: "仅扫描优质股（蓝筹/白马）",
-    SCAN_MODE_QUALITY_ONLY: "扫描优质+标准股（排除边缘和垃圾股）",
-    SCAN_MODE_STANDARD: "扫描标准及以上（排除边缘和垃圾股）",
+    SCAN_MODE_QUALITY_ONLY: "扫描优质+标准股（排除高风险）",
+    SCAN_MODE_STANDARD: "扫描标准及以上（含投机股）",
     SCAN_MODE_FULL: "全市场扫描（仅排除ST等高风险）",
 }
 
@@ -85,10 +85,10 @@ class StockQualityClassifier:
 
         filtered = df[keep_mask].copy()
         logger.info(
-            "[QualityFilter] 质量分级: 优质=%d, 标准=%d, 边缘=%d, 排除=%d (模式=%s)",
+            "[QualityFilter] 质量分级: 优质=%d, 标准=%d, 投机=%d, 排除=%d (模式=%s)",
             sum(1 for s in scores if s.tier == TIER_PREMIUM),
             sum(1 for s in scores if s.tier == TIER_STANDARD),
-            sum(1 for s in scores if s.tier == TIER_MARGINAL),
+            sum(1 for s in scores if s.tier == TIER_SPECULATIVE),
             sum(1 for s in scores if s.tier == TIER_EXCLUDED),
             self.scan_mode,
         )
@@ -129,12 +129,12 @@ class StockQualityClassifier:
 
         if not risk_pass:
             tier = TIER_EXCLUDED
-        elif total >= 75:
+        elif total >= 140:
             tier = TIER_PREMIUM
-        elif total >= 50:
+        elif total >= 110:
             tier = TIER_STANDARD
-        elif total >= 30:
-            tier = TIER_MARGINAL
+        elif total >= 80:
+            tier = TIER_SPECULATIVE
         else:
             tier = TIER_EXCLUDED
             if not exclusion_reason:
@@ -155,8 +155,8 @@ class StockQualityClassifier:
             if self.scan_mode == SCAN_MODE_FULL:
                 return qs.exclusion_reason == "" or "ST" in qs.exclusion_reason or "退市" in qs.exclusion_reason
             return False
-        if qs.tier == TIER_MARGINAL:
-            return self.scan_mode in (SCAN_MODE_FULL, SCAN_MODE_STANDARD)
+        if qs.tier == TIER_SPECULATIVE:
+            return self.scan_mode in (SCAN_MODE_FULL, SCAN_MODE_STANDARD, SCAN_MODE_QUALITY_ONLY)
         return True
 
     def _score_risk(self, name: str, code: str) -> Tuple[float, bool, str]:
@@ -175,8 +175,7 @@ class StockQualityClassifier:
         pass_flag = True
 
         if pe <= 0:
-            score += 5
-            pass_flag = False
+            score += 8
         elif pe <= 15:
             score += 25
         elif pe <= 30:
@@ -185,9 +184,10 @@ class StockQualityClassifier:
             score += 12
         elif pe <= 100:
             score += 5
+        elif pe <= 200:
+            score += 3
         else:
-            score += 2
-            pass_flag = False
+            score += 1
 
         if pb <= 0:
             score += 5
@@ -217,14 +217,18 @@ class StockQualityClassifier:
             score += 18
         elif cap_yi >= 50:
             score += 14
-        elif cap_yi >= 30:
+        elif cap_yi >= 20:
             score += 10
+        elif cap_yi >= 10:
+            score += 6
         else:
-            score += 4
-            pass_flag = False
+            score += 2
 
         if turnover <= 0:
             score += 0
+            pass_flag = False
+        elif turnover <= 0.3:
+            score += 3
             pass_flag = False
         elif turnover <= 0.5:
             score += 5
@@ -245,9 +249,8 @@ class StockQualityClassifier:
 
         if price <= 0:
             return 0, False
-        elif price < 3:
+        elif price < 2:
             score += 3
-            pass_flag = False
         elif price < 5:
             score += 8
         elif price < 10:
@@ -256,8 +259,10 @@ class StockQualityClassifier:
             score += 25
         elif price < 100:
             score += 20
+        elif price < 500:
+            score += 15
         else:
-            score += 12
+            score += 10
 
         if abs(pct_chg) > 9.5:
             score += 2

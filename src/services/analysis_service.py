@@ -45,7 +45,7 @@ class AnalysisService:
         force_refresh: bool = False,
         query_id: Optional[str] = None,
         send_notification: bool = True,
-        progress_callback: Optional[Callable[[int, str], None]] = None,
+        progress_callback: Optional[Callable[..., None]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         执行股票分析

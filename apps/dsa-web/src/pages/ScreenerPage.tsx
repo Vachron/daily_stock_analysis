@@ -22,22 +22,32 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  Trash2,
+  XCircle as XCircleIcon,
+  Search,
+  ArrowUpDown,
+  Download,
+  Loader2,
 } from 'lucide-react';
 import { screenerApi } from '../api/screener';
 import { getParsedApiError } from '../api/error';
 import type { ParsedApiError } from '../api/error';
 import type { PoolStatusResponse, PoolSummaryResponse } from '../types/screener';
+import { useScreenerStream } from '../hooks/useScreenerStream';
+import type { ScreenerProgress, ScreenerStep } from '../hooks/useScreenerStream';
 import {
   ApiErrorAlert,
   Card,
   EmptyState,
   StatCard,
   Tooltip,
+  ConfirmDialog,
 } from '../components/common';
 import type {
   ScreenerPickItem,
   ScreenerPerformanceResponse,
   StrategyScores,
+  CategoryBreakdown,
   DataFetchFailure,
   ScreenerInsightItem,
 } from '../types/screener';
@@ -54,6 +64,77 @@ function capYi(value?: number | null): string {
   if (value == null) return '--';
   if (value >= 10000) return `${(value / 10000).toFixed(1)}万亿`;
   return `${value.toFixed(1)}亿`;
+}
+
+const CATEGORY_LABELS: Record<string, string> = {
+  trend: '趋势',
+  reversal: '反转',
+  pattern: '形态',
+  framework: '框架',
+  volume_price: '量价',
+  alpha101: 'Alpha',
+};
+
+function StrategyScoreBar({ breakdown }: { breakdown: Record<string, CategoryBreakdown> }) {
+  const entries = Object.entries(breakdown).filter(([, v]) => v.avgScore > 0);
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="space-y-1.5">
+      {entries.map(([key, val]) => {
+        const pctVal = Math.min(100, Math.max(0, val.avgScore));
+        const barColor =
+          pctVal >= 70 ? 'bg-emerald-400' : pctVal >= 50 ? 'bg-cyan' : pctVal >= 30 ? 'bg-amber-400' : 'bg-red-400';
+        return (
+          <div key={key} className="flex items-center gap-2 text-[11px]">
+            <span className="w-10 shrink-0 text-right text-secondary-text">
+              {CATEGORY_LABELS[key] || key}
+            </span>
+            <div className="flex-1 h-2 rounded-full bg-border/30 overflow-hidden">
+              <div
+                className={`h-full rounded-full transition-all duration-500 ${barColor}`}
+                style={{ width: `${pctVal}%` }}
+              />
+            </div>
+            <span className="w-8 shrink-0 font-mono tabular-nums text-secondary-text">
+              {val.avgScore.toFixed(0)}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ProgressSteps({ steps }: { steps: ScreenerStep[] }) {
+  return (
+    <div className="space-y-1.5">
+      {steps.map((step, i) => {
+        const iconCls =
+          step.status === 'completed'
+            ? 'text-success'
+            : step.status === 'running'
+              ? 'text-cyan'
+              : step.status === 'failed'
+                ? 'text-danger'
+                : 'text-muted-text';
+        const Icon =
+          step.status === 'completed' ? CheckCircle2
+            : step.status === 'running' ? Loader2
+              : step.status === 'failed' ? XCircle
+                : Clock;
+        return (
+          <div key={i} className="flex items-center gap-2 text-xs">
+            <Icon className={`h-3.5 w-3.5 shrink-0 ${iconCls} ${step.status === 'running' ? 'animate-spin' : ''}`} />
+            <span className={step.status === 'pending' ? 'text-muted-text' : step.status === 'completed' ? 'text-secondary-text' : 'text-foreground'}>
+              {step.label}
+            </span>
+            {step.detail && <span className="text-muted-text ml-auto font-mono tabular-nums">{step.detail}</span>}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
 
 function statusBadge(status: string) {
@@ -128,7 +209,8 @@ const ScreenerPage: React.FC = () => {
   const [insightMap, setInsightMap] = useState<Record<string, ScreenerInsightItem>>({});
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
-  const [expandedInsight, setExpandedInsight] = useState<string | null>(null);
+  const [expandedInsight, setExpandedInsight] = useState<Set<string>>(new Set());
+  const [expandedStrategy, setExpandedStrategy] = useState<Set<string>>(new Set());
 
   // Watch list
   const [watchList, setWatchList] = useState<ScreenerPickItem[]>([]);
@@ -147,6 +229,39 @@ const ScreenerPage: React.FC = () => {
   const [isInitingPool, setIsInitingPool] = useState(false);
   const [showPoolPanel, setShowPoolPanel] = useState(false);
   const poolPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [screenerProgress, setScreenerProgress] = useState<ScreenerProgress | null>(null);
+
+  const { poolProgress: ssePoolProgress, screenerProgress: sseScreenerProgress } = useScreenerStream({
+    onPoolProgress: (progress) => {
+      if (progress.status === 'completed') {
+        fetchPoolStatus();
+      }
+    },
+    onScreenerProgress: (progress) => {
+      setScreenerProgress(progress);
+      if (progress.status === 'completed') {
+        setIsRunning(false);
+        fetchTodayPicks();
+        if (activeTab === 'watch') fetchWatchList();
+        fetchInsights();
+      } else if (progress.status === 'failed') {
+        setIsRunning(false);
+        setRunError({ title: '选股失败', message: progress.message, rawMessage: progress.message, category: 'unknown' });
+      }
+    },
+  });
+
+  const [watchConfirm, setWatchConfirm] = useState<{
+    type: 'close' | 'remove';
+    code: string;
+    name: string;
+  } | null>(null);
+
+  const [watchSortKey, setWatchSortKey] = useState<'date' | 'return' | 'maxReturn' | 'drawdown' | 'days'>('date');
+  const [watchSortDir, setWatchSortDir] = useState<'asc' | 'desc'>('desc');
+  const [watchSearch, setWatchSearch] = useState('');
+  const [selectedWatchCodes, setSelectedWatchCodes] = useState<Set<string>>(new Set());
 
   const fetchTodayPicks = useCallback(async () => {
     setIsLoadingPicks(true);
@@ -276,6 +391,63 @@ const ScreenerPage: React.FC = () => {
     navigate(`/chat?stock=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
   }, [navigate]);
 
+  const handleCloseWatch = useCallback((code: string, name: string) => {
+    setWatchConfirm({ type: 'close', code, name });
+  }, []);
+
+  const handleRemoveWatch = useCallback((code: string, name: string) => {
+    setWatchConfirm({ type: 'remove', code, name });
+  }, []);
+
+  const handleWatchConfirm = useCallback(async () => {
+    if (!watchConfirm) return;
+    const { type, code } = watchConfirm;
+    try {
+      if (type === 'close') {
+        await screenerApi.closeWatch({ code });
+      } else {
+        await screenerApi.removeWatch({ code });
+      }
+      fetchWatchList();
+    } catch {
+      // ignore
+    } finally {
+      setWatchConfirm(null);
+    }
+  }, [watchConfirm, fetchWatchList]);
+
+  const handleExportWatchCsv = useCallback(() => {
+    const watching = watchList.filter((w) => w.status === 'watch');
+    if (watching.length === 0) return;
+    const header = '排名,股票代码,股票名称,入选日,入选价,当前价,持有天数,收益率,最大收益,最大回撤,状态';
+    const rows = watching.map((item, idx) => {
+      const curPrice = item.priceAtScreen != null && item.returnPct != null
+        ? (item.priceAtScreen * (1 + item.returnPct / 100)).toFixed(2)
+        : '';
+      return [
+        idx + 1,
+        item.code,
+        item.name || '',
+        item.screenDate || '',
+        item.priceAtScreen?.toFixed(2) ?? '',
+        curPrice,
+        item.daysHeld ?? 0,
+        item.returnPct?.toFixed(2) ?? '',
+        item.maxReturnPct?.toFixed(2) ?? '',
+        item.maxDrawdownPct?.toFixed(2) ?? '',
+        item.status,
+      ].join(',');
+    });
+    const csv = [header, ...rows].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `观察池_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [watchList]);
+
   const fetchInsights = useCallback(async () => {
     setIsLoadingInsights(true);
     try {
@@ -286,12 +458,15 @@ const ScreenerPage: React.FC = () => {
         map[ins.code] = ins;
       }
       setInsightMap(map);
+      if (result.insights.length > 0 && expandedInsight.size === 0) {
+        setExpandedInsight(new Set(result.insights.slice(0, 3).map((ins) => ins.code)));
+      }
     } catch {
       // ignore
     } finally {
       setIsLoadingInsights(false);
     }
-  }, [todayDate]);
+  }, [todayDate, expandedInsight.size]);
 
   const handleGenerateInsights = useCallback(async () => {
     setIsGeneratingInsights(true);
@@ -306,7 +481,12 @@ const ScreenerPage: React.FC = () => {
   }, [fetchInsights]);
 
   const toggleInsight = useCallback((code: string) => {
-    setExpandedInsight(prev => prev === code ? null : code);
+    setExpandedInsight(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
   }, []);
 
   useEffect(() => {
@@ -491,7 +671,7 @@ const ScreenerPage: React.FC = () => {
               <span className="text-xs text-secondary-text">质量分布</span>
               {qualitySummary.premium > 0 && <span className="text-xs text-success">优质 {qualitySummary.premium}</span>}
               {qualitySummary.standard > 0 && <span className="text-xs text-cyan">标准 {qualitySummary.standard}</span>}
-              {qualitySummary.marginal > 0 && <span className="text-xs text-warning">边缘 {qualitySummary.marginal}</span>}
+              {qualitySummary.speculative > 0 && <span className="text-xs text-warning">投机 {qualitySummary.speculative}</span>}
               {qualitySummary.excluded > 0 && <span className="text-xs text-danger">排除 {qualitySummary.excluded}</span>}
             </>
           )}
@@ -602,6 +782,23 @@ const ScreenerPage: React.FC = () => {
                             <span className="text-xs text-muted-text">+{triggered.length - 3}</span>
                           </Tooltip>
                         )}
+                        {ss?.categoryBreakdown && Object.keys(ss.categoryBreakdown).length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setExpandedStrategy((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(item.code)) next.delete(item.code);
+                                else next.add(item.code);
+                                return next;
+                              });
+                            }}
+                            className="text-xs text-cyan hover:text-cyan/80 transition-colors"
+                            title="策略得分分布"
+                          >
+                            <BarChart3 className="inline h-3 w-3" />
+                          </button>
+                        )}
                       </div>
                     </td>
                     <td className="screener-table-cell font-mono tabular-nums">
@@ -636,13 +833,31 @@ const ScreenerPage: React.FC = () => {
                             title="AI 洞察"
                           >
                             <Sparkles className="h-3.5 w-3.5" />
-                            {expandedInsight === item.code ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                            {expandedInsight.has(item.code) ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                           </button>
                         )}
                       </div>
                     </td>
                   </tr>
-                  {insightMap[item.code] && expandedInsight === item.code && (
+                  {ss?.categoryBreakdown && expandedStrategy.has(item.code) && (
+                    <tr key={`strategy-${item.code}`}>
+                      <td colSpan={11} className="p-0">
+                        <div className="bg-cyan/5 border-t border-b border-cyan/20 px-4 py-3">
+                          <div className="flex items-center gap-3 mb-2">
+                            <span className="text-xs font-medium text-cyan">策略得分分布</span>
+                            <span className="text-xs text-secondary-text">
+                              综合 {ss.fusionScore.toFixed(1)} · 策略均值 {ss.strategyAvg.toFixed(1)} · 基本面 {ss.baseFactorScore.toFixed(0)}
+                            </span>
+                            {ss.regimeLabel && (
+                              <span className="text-xs text-muted-text">· {ss.regimeLabel}</span>
+                            )}
+                          </div>
+                          <StrategyScoreBar breakdown={ss.categoryBreakdown} />
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  {insightMap[item.code] && expandedInsight.has(item.code) && (
                     <tr key={`insight-${item.code}`}>
                       <td colSpan={11} className="p-0">
                         <div className="bg-amber/5 border-t border-b border-amber/20 px-4 py-3">
@@ -716,6 +931,84 @@ const ScreenerPage: React.FC = () => {
     const watching = watchList.filter((w) => w.status === 'watch');
     const closed = watchList.filter((w) => w.status === 'closed');
 
+    const filteredWatching = watching.filter((w) => {
+      if (!watchSearch) return true;
+      const q = watchSearch.toLowerCase();
+      return (
+        (w.name || '').toLowerCase().includes(q) ||
+        (w.code || '').toLowerCase().includes(q)
+      );
+    });
+
+    const sortedWatching = [...filteredWatching].sort((a, b) => {
+      const dir = watchSortDir === 'asc' ? 1 : -1;
+      switch (watchSortKey) {
+        case 'date':
+          return dir * ((a.screenDate || '').localeCompare(b.screenDate || ''));
+        case 'return':
+          return dir * ((a.returnPct ?? 0) - (b.returnPct ?? 0));
+        case 'maxReturn':
+          return dir * ((a.maxReturnPct ?? 0) - (b.maxReturnPct ?? 0));
+        case 'drawdown':
+          return dir * ((a.maxDrawdownPct ?? 0) - (b.maxDrawdownPct ?? 0));
+        case 'days':
+          return dir * ((a.daysHeld ?? 0) - (b.daysHeld ?? 0));
+        default:
+          return 0;
+      }
+    });
+
+    const toggleSort = (key: typeof watchSortKey) => {
+      if (watchSortKey === key) {
+        setWatchSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+      } else {
+        setWatchSortKey(key);
+        setWatchSortDir('desc');
+      }
+    };
+
+    const toggleSelect = (code: string) => {
+      setSelectedWatchCodes((prev) => {
+        const next = new Set(prev);
+        if (next.has(code)) next.delete(code);
+        else next.add(code);
+        return next;
+      });
+    };
+
+    const toggleSelectAll = () => {
+      if (selectedWatchCodes.size === sortedWatching.length) {
+        setSelectedWatchCodes(new Set());
+      } else {
+        setSelectedWatchCodes(new Set(sortedWatching.map((w) => w.code)));
+      }
+    };
+
+    const handleBatchClose = async () => {
+      for (const code of selectedWatchCodes) {
+        try { await screenerApi.closeWatch({ code }); } catch { /* ignore */ }
+      }
+      setSelectedWatchCodes(new Set());
+      fetchWatchList();
+    };
+
+    const handleBatchRemove = async () => {
+      for (const code of selectedWatchCodes) {
+        try { await screenerApi.removeWatch({ code }); } catch { /* ignore */ }
+      }
+      setSelectedWatchCodes(new Set());
+      fetchWatchList();
+    };
+
+    const sortIcon = (key: typeof watchSortKey) => (
+      <ArrowUpDown
+        className={`inline h-3 w-3 ml-0.5 cursor-pointer transition-colors ${
+          watchSortKey === key ? 'text-cyan' : 'text-muted-text hover:text-secondary-text'
+        }`}
+        onClick={() => toggleSort(key)}
+      />
+    );
+
     return (
       <div className="animate-fade-in space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
@@ -724,6 +1017,37 @@ const ScreenerPage: React.FC = () => {
             观察中 {watching.length} 只 · 已关闭 {closed.length} 只
           </span>
           <div className="flex-1" />
+          {selectedWatchCodes.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-cyan">已选 {selectedWatchCodes.size} 只</span>
+              <button
+                type="button"
+                onClick={handleBatchClose}
+                className="btn-secondary flex items-center gap-1 text-xs text-warning"
+              >
+                <XCircleIcon className="h-3.5 w-3.5" />
+                批量关闭
+              </button>
+              <button
+                type="button"
+                onClick={handleBatchRemove}
+                className="btn-secondary flex items-center gap-1 text-xs text-danger"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                批量移除
+              </button>
+            </div>
+          )}
+          <div className="relative">
+            <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-text" />
+            <input
+              type="text"
+              value={watchSearch}
+              onChange={(e) => setWatchSearch(e.target.value)}
+              placeholder="搜索股票名称/代码"
+              className="h-8 w-44 rounded-lg border border-border/60 bg-card pl-8 pr-3 text-xs text-foreground placeholder:text-muted-text focus:border-cyan/50 focus:outline-none transition-colors"
+            />
+          </div>
           <button
             type="button"
             onClick={handleUpdateTracking}
@@ -742,36 +1066,66 @@ const ScreenerPage: React.FC = () => {
             <Target className={`h-3.5 w-3.5 ${isFeedbacking ? 'animate-spin' : ''}`} />
             回测反馈
           </button>
+          <button
+            type="button"
+            onClick={handleExportWatchCsv}
+            className="btn-secondary flex items-center gap-1.5 text-xs"
+          >
+            <Download className="h-3.5 w-3.5" />
+            导出 CSV
+          </button>
         </div>
 
-        {watching.length > 0 && (
+        {sortedWatching.length > 0 && (
           <div>
             <h3 className="mb-2 text-sm font-medium text-foreground flex items-center gap-2">
               <Eye className="h-4 w-4 text-cyan" />
               观察中
+              {watchSearch && (
+                <span className="text-xs text-secondary-text font-normal">
+                  （搜索到 {sortedWatching.length} 只）
+                </span>
+              )}
             </h3>
             <div className="screener-table-wrapper overflow-x-auto rounded-xl border border-border/40">
               <table className="w-full min-w-[900px] text-sm">
                 <thead className="screener-table-head">
                   <tr className="text-left">
+                    <th className="screener-table-head-cell w-8">
+                      <input
+                        type="checkbox"
+                        checked={selectedWatchCodes.size === sortedWatching.length && sortedWatching.length > 0}
+                        onChange={toggleSelectAll}
+                        className="h-3.5 w-3.5 rounded border-border/60 accent-cyan"
+                      />
+                    </th>
                     <th className="screener-table-head-cell">排名</th>
                     <th className="screener-table-head-cell">股票</th>
-                    <th className="screener-table-head-cell">入选日</th>
+                    <th className="screener-table-head-cell">入选日 {sortIcon('date')}</th>
                     <th className="screener-table-head-cell">入选价</th>
-                    <th className="screener-table-head-cell">持有天数</th>
-                    <th className="screener-table-head-cell">收益率</th>
-                    <th className="screener-table-head-cell">最大收益</th>
-                    <th className="screener-table-head-cell">最大回撤</th>
+                    <th className="screener-table-head-cell">当前价</th>
+                    <th className="screener-table-head-cell">持有天数 {sortIcon('days')}</th>
+                    <th className="screener-table-head-cell">收益率 {sortIcon('return')}</th>
+                    <th className="screener-table-head-cell">最大收益 {sortIcon('maxReturn')}</th>
+                    <th className="screener-table-head-cell">最大回撤 {sortIcon('drawdown')}</th>
                     <th className="screener-table-head-cell">回测验证</th>
                     <th className="screener-table-head-cell">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {watching.map((item, idx) => {
+                  {sortedWatching.map((item, idx) => {
                     const watchRank = idx + 1;
                     const rankColor = watchRank <= 3 ? 'text-cyan font-bold' : 'text-secondary-text';
                     return (
-                    <tr key={item.id} className="screener-table-row">
+                    <tr key={item.id} className={`screener-table-row ${selectedWatchCodes.has(item.code) ? 'bg-cyan/5' : ''}`}>
+                      <td className="screener-table-cell">
+                        <input
+                          type="checkbox"
+                          checked={selectedWatchCodes.has(item.code)}
+                          onChange={() => toggleSelect(item.code)}
+                          className="h-3.5 w-3.5 rounded border-border/60 accent-cyan"
+                        />
+                      </td>
                       <td className="screener-table-cell">
                         <span className={`font-mono text-sm tabular-nums ${rankColor}`}>
                           {watchRank}
@@ -788,6 +1142,15 @@ const ScreenerPage: React.FC = () => {
                       </td>
                       <td className="screener-table-cell font-mono tabular-nums">
                         {item.priceAtScreen != null ? `¥${item.priceAtScreen.toFixed(2)}` : '--'}
+                      </td>
+                      <td className="screener-table-cell font-mono tabular-nums">
+                        {item.priceAtScreen != null && item.returnPct != null
+                          ? (() => {
+                              const cur = item.priceAtScreen! * (1 + item.returnPct! / 100);
+                              const cls = item.returnPct! > 0 ? 'text-success' : item.returnPct! < 0 ? 'text-danger' : '';
+                              return <span className={cls}>¥{cur.toFixed(2)}</span>;
+                            })()
+                          : '--'}
                       </td>
                       <td className="screener-table-cell font-mono tabular-nums text-secondary-text">
                         {item.daysHeld}天
@@ -821,15 +1184,35 @@ const ScreenerPage: React.FC = () => {
                         )}
                       </td>
                       <td className="screener-table-cell">
-                        <button
-                          type="button"
-                          onClick={() => handleAskStock(item.code, item.name || item.code)}
-                          className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
-                          title="AI 问股"
-                        >
-                          <MessageSquare className="h-3.5 w-3.5" />
-                          问股
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleAskStock(item.code, item.name || item.code)}
+                            className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
+                            title="AI 问股"
+                          >
+                            <MessageSquare className="h-3.5 w-3.5" />
+                            问股
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleCloseWatch(item.code, item.name || item.code)}
+                            className="inline-flex items-center gap-1 text-xs text-warning hover:text-warning/80 transition-colors"
+                            title="关闭观察（移入已关闭）"
+                          >
+                            <XCircleIcon className="h-3.5 w-3.5" />
+                            关闭
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveWatch(item.code, item.name || item.code)}
+                            className="inline-flex items-center gap-1 text-xs text-danger hover:text-danger/80 transition-colors"
+                            title="彻底移除"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            移除
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )})}
@@ -1183,6 +1566,29 @@ const ScreenerPage: React.FC = () => {
         {runError && (
           <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
         )}
+
+        {isRunning && screenerProgress && screenerProgress.status === 'running' && (
+          <div className="mt-3 rounded-xl border border-cyan/20 bg-cyan/5 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 text-cyan animate-spin" />
+                <span className="text-sm font-medium text-foreground">选股进行中</span>
+              </div>
+              <span className="font-mono text-sm text-cyan">{screenerProgress.progressPct.toFixed(1)}%</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-white/5 mb-3">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-cyan to-blue-500 transition-all duration-500"
+                style={{ width: Math.min(100, screenerProgress.progressPct) + '%' }}
+              />
+            </div>
+            <div className="text-xs text-secondary-text mb-2">{screenerProgress.message}</div>
+            {screenerProgress.steps.length > 0 && (
+              <ProgressSteps steps={screenerProgress.steps} />
+            )}
+          </div>
+        )}
+
         <p className="mt-2 text-xs text-muted-text">
           从全市场A股中多因子筛选优质标的，自动跟踪观察池收益并支持回测验证
         </p>
@@ -1209,15 +1615,18 @@ const ScreenerPage: React.FC = () => {
             {poolStatus.status === 'running' && (
               <div className="space-y-3">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-secondary-text">初始化进度</span>
-                  <span className="font-mono text-cyan">{poolStatus.progressPct.toFixed(1)}%</span>
+                  <span className="text-secondary-text">{ssePoolProgress?.message || '初始化进度'}</span>
+                  <span className="font-mono text-cyan">{(ssePoolProgress?.progressPct ?? poolStatus.progressPct).toFixed(1)}%</span>
                 </div>
                 <div className="h-2 w-full rounded-full bg-white/5">
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-cyan to-blue-500 transition-all duration-500"
-                    style={{ width: Math.min(100, poolStatus.progressPct) + '%' }}
+                    style={{ width: Math.min(100, ssePoolProgress?.progressPct ?? poolStatus.progressPct) + '%' }}
                   />
                 </div>
+                {ssePoolProgress && ssePoolProgress.steps.length > 0 && (
+                  <ProgressSteps steps={ssePoolProgress.steps} />
+                )}
                 <div className="flex items-center justify-between text-xs text-secondary-text">
                   <span>已扫描 {poolStatus.totalStocks} 只 | 过滤 {poolStatus.filteredStocks} | 打标 {poolStatus.taggedStocks} | 排除 {poolStatus.excludedStocks}</span>
                   <span>预计剩余 {formatEta(poolStatus.etaSeconds)}</span>
@@ -1366,6 +1775,21 @@ const ScreenerPage: React.FC = () => {
         {activeTab === 'watch' && renderWatchTab()}
         {activeTab === 'performance' && renderPerformanceTab()}
       </main>
+
+      <ConfirmDialog
+        isOpen={watchConfirm !== null}
+        title={watchConfirm?.type === 'close' ? '关闭观察' : '移除股票'}
+        message={
+          watchConfirm?.type === 'close'
+            ? `确认将「${watchConfirm?.name}」移入已关闭？该股票的历史记录将保留。`
+            : `确认彻底移除「${watchConfirm?.name}」？此操作不可恢复。`
+        }
+        confirmText={watchConfirm?.type === 'close' ? '关闭' : '移除'}
+        cancelText="取消"
+        isDanger={watchConfirm?.type === 'remove'}
+        onConfirm={handleWatchConfirm}
+        onCancel={() => setWatchConfirm(null)}
+      />
     </div>
   );
 };

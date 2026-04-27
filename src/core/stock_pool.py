@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ import pandas as pd
 from src.storage import DatabaseManager, StockPoolEntry, StockPoolMeta
 
 logger = logging.getLogger(__name__)
+
+from src.core.screener_progress import ScreenerStep
 
 POOL_EXPIRE_DAYS = 45
 
@@ -147,18 +150,54 @@ class StockPoolInitializer:
 
         return version
 
+    def _emit_progress(self, **kwargs: Any) -> None:
+        from src.core.screener_progress import get_screener_broadcaster
+        broadcaster = get_screener_broadcaster()
+        broadcaster.update_pool_progress(**kwargs)
+
     def _run_init(self, version: str, expire_days: int) -> None:
         """Background worker: full-market scan → filter → tag → persist."""
         try:
+            self._emit_progress(
+                status="running",
+                progress_pct=0,
+                message="正在获取全市场行情数据...",
+                stage="fetching_quotes",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="running", detail=""),
+                    ScreenerStep(label="基础过滤", status="pending", detail=""),
+                    ScreenerStep(label="分类打标签", status="pending", detail=""),
+                    ScreenerStep(label="持久化存储", status="pending", detail=""),
+                ],
+            )
             self._update_progress(status="fetching_quotes")
             raw_df = self._fetch_full_market_quotes()
             if raw_df is None or raw_df.empty:
                 detail = "; ".join(self._last_fetch_errors) if self._last_fetch_errors else "未知原因"
                 self._finish_with_error(version, f"无法获取全市场行情数据: {detail}")
+                self._emit_progress(
+                    status="failed",
+                    progress_pct=0,
+                    message=f"获取行情数据失败: {detail}",
+                    stage="fetching_quotes",
+                )
                 return
 
             total = len(raw_df)
             self._update_progress(total=total)
+            self._emit_progress(
+                status="running",
+                progress_pct=10,
+                message=f"获取到 {total} 只股票行情数据",
+                stage="fetching_quotes",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="completed", detail=f"获取 {total} 只"),
+                    ScreenerStep(label="基础过滤", status="running", detail=""),
+                    ScreenerStep(label="分类打标签", status="pending", detail=""),
+                    ScreenerStep(label="持久化存储", status="pending", detail=""),
+                ],
+                extra={"total": total},
+            )
 
             self._update_progress(status="filtering")
             filtered = self._apply_basic_filters(raw_df)
@@ -167,10 +206,46 @@ class StockPoolInitializer:
 
             if filtered.empty:
                 self._finish_with_error(version, "过滤后无可用股票")
+                self._emit_progress(
+                    status="failed",
+                    progress_pct=20,
+                    message="过滤后无可用股票",
+                    stage="filtering",
+                )
                 return
+
+            self._emit_progress(
+                status="running",
+                progress_pct=25,
+                message=f"过滤完成: {len(filtered)} 只通过, {excluded_count} 只排除",
+                stage="filtering",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="completed", detail=f"获取 {total} 只"),
+                    ScreenerStep(label="基础过滤", status="completed", detail=f"通过 {len(filtered)} 只, 排除 {excluded_count} 只"),
+                    ScreenerStep(label="分类打标签", status="running", detail=""),
+                    ScreenerStep(label="持久化存储", status="pending", detail=""),
+                ],
+                extra={"total": total, "filtered": len(filtered), "excluded": excluded_count},
+            )
 
             self._update_progress(status="tagging")
             entries = self._classify_and_tag(filtered, version)
+
+            tagged_count = len([e for e in entries if not e.get("is_excluded")])
+            excluded_tag_count = len([e for e in entries if e.get("is_excluded")])
+            self._emit_progress(
+                status="running",
+                progress_pct=75,
+                message=f"分类打标完成: {tagged_count} 只活跃, {excluded_tag_count} 只排除",
+                stage="tagging",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="completed", detail=f"获取 {total} 只"),
+                    ScreenerStep(label="基础过滤", status="completed", detail=f"通过 {len(filtered)} 只"),
+                    ScreenerStep(label="分类打标签", status="completed", detail=f"活跃 {tagged_count} 只, 排除 {excluded_tag_count} 只"),
+                    ScreenerStep(label="持久化存储", status="running", detail=""),
+                ],
+                extra={"total": total, "filtered": len(filtered), "tagged": tagged_count, "excluded": excluded_tag_count},
+            )
 
             self._update_progress(status="persisting")
             self._persist_entries(version, entries)
@@ -197,6 +272,20 @@ class StockPoolInitializer:
                     meta.finished_at = datetime.now()
                     session.commit()
 
+            self._emit_progress(
+                status="completed",
+                progress_pct=100,
+                message=f"初始化完成: {p.tagged} 只活跃股票",
+                stage="completed",
+                steps=[
+                    ScreenerStep(label="获取行情数据", status="completed", detail=f"获取 {total} 只"),
+                    ScreenerStep(label="基础过滤", status="completed", detail=f"通过 {len(filtered)} 只"),
+                    ScreenerStep(label="分类打标签", status="completed", detail=f"活跃 {p.tagged} 只"),
+                    ScreenerStep(label="持久化存储", status="completed", detail=f"已保存 {len(entries)} 条"),
+                ],
+                extra={"total": p.total, "filtered": p.filtered, "tagged": p.tagged, "excluded": p.excluded},
+            )
+
             logger.info(
                 "[PoolInit] 初始化完成: version=%s, total=%d, filtered=%d, tagged=%d, excluded=%d",
                 version, p.total, p.filtered, p.tagged, p.excluded,
@@ -205,6 +294,12 @@ class StockPoolInitializer:
         except Exception as exc:
             logger.error("[PoolInit] 初始化失败: %s", exc, exc_info=True)
             self._finish_with_error(version, str(exc))
+            self._emit_progress(
+                status="failed",
+                progress_pct=0,
+                message=f"初始化失败: {str(exc)}",
+                stage="failed",
+            )
 
     def _finish_with_error(self, version: str, message: str) -> None:
         with self._lock:
@@ -236,6 +331,11 @@ class StockPoolInitializer:
     def _fetch_full_market_quotes(self) -> Optional[pd.DataFrame]:
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            os.environ.pop(key, None)
+        os.environ['NO_PROXY'] = '*'
+        os.environ['no_proxy'] = '*'
+
         source_errors: List[str] = []
 
         try:
@@ -249,6 +349,7 @@ class StockPoolInitializer:
                     raise TimeoutError("akshare 调用超时(60s)")
             if df is not None and not df.empty:
                 logger.info("[PoolInit] akshare 获取成功: %d 只股票", len(df))
+                self._save_market_cache(df)
                 return df
         except Exception as e:
             err_msg = f"akshare: {e}"
@@ -266,19 +367,183 @@ class StockPoolInitializer:
                     raise TimeoutError("efinance 调用超时(60s)")
             if df is not None and not df.empty:
                 logger.info("[PoolInit] efinance 获取成功: %d 只股票", len(df))
+                self._save_market_cache(df)
                 return df
         except Exception as e:
             err_msg = f"efinance: {e}"
             source_errors.append(err_msg)
-            logger.warning("[PoolInit] efinance 也获取失败: %s, 尝试 tushare...", e)
+            logger.warning("[PoolInit] efinance 也获取失败: %s, 尝试腾讯/新浪...", e)
+
+        tencent_df = self._fetch_tencent_full_market_quotes()
+        if tencent_df is not None:
+            logger.info("[PoolInit] 腾讯行情获取成功: %d 只股票", len(tencent_df))
+            self._save_market_cache(tencent_df)
+            self._last_fetch_errors = []
+            return tencent_df
+
+        source_errors.append("tencent/sina: 获取失败")
 
         tushare_df = self._fetch_last_trading_day_quotes()
-        if tushare_df is None:
-            source_errors.append("tushare: 获取失败或不可用")
-            self._last_fetch_errors = source_errors
-        else:
+        if tushare_df is not None:
+            logger.info("[PoolInit] tushare 获取成功: %d 只股票", len(tushare_df))
+            self._save_market_cache(tushare_df)
             self._last_fetch_errors = []
-        return tushare_df
+            return tushare_df
+
+        source_errors.append("tushare: 获取失败或不可用")
+
+        cached_df = self._load_market_cache()
+        if cached_df is not None and not cached_df.empty:
+            logger.warning("[PoolInit] 所有数据源失败，使用缓存数据: %d 只股票", len(cached_df))
+            self._last_fetch_errors = source_errors
+            return cached_df
+
+        self._last_fetch_errors = source_errors
+        return None
+
+    def _market_cache_path(self) -> str:
+        cache_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cache')
+        os.makedirs(cache_dir, exist_ok=True)
+        return os.path.join(cache_dir, 'market_quotes.csv')
+
+    def _save_market_cache(self, df: pd.DataFrame) -> None:
+        try:
+            path = self._market_cache_path()
+            df.to_csv(path, index=False, encoding='utf-8-sig')
+            logger.info("[PoolInit] 市场行情缓存已保存: %s", path)
+        except Exception as e:
+            logger.warning("[PoolInit] 保存市场行情缓存失败: %s", e)
+
+    def _load_market_cache(self) -> Optional[pd.DataFrame]:
+        try:
+            path = self._market_cache_path()
+            if not os.path.exists(path):
+                return None
+            mtime = os.path.getmtime(path)
+            age_days = (datetime.now().timestamp() - mtime) / 86400
+            if age_days > 7:
+                logger.warning("[PoolInit] 市场行情缓存超过 7 天，已过期")
+                return None
+            df = pd.read_csv(path, encoding='utf-8-sig')
+            logger.info("[PoolInit] 加载市场行情缓存: %d 只股票 (缓存时间 %.1f 天前)", len(df), age_days)
+            return df
+        except Exception as e:
+            logger.warning("[PoolInit] 加载市场行情缓存失败: %s", e)
+            return None
+
+    def _fetch_tencent_full_market_quotes(self) -> Optional[pd.DataFrame]:
+        try:
+            import requests as _req
+
+            stock_codes = self._get_all_a_stock_codes()
+            if not stock_codes:
+                return None
+
+            symbols: List[str] = []
+            for c in stock_codes:
+                if c.startswith(('6', '9')):
+                    symbols.append(f'sh{c}')
+                elif c.startswith('8') or c.startswith('4'):
+                    symbols.append(f'bj{c}')
+                else:
+                    symbols.append(f'sz{c}')
+
+            session = _req.Session()
+            session.headers.update({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Referer': 'http://finance.qq.com',
+            })
+            session.trust_env = False
+
+            batch_size = 800
+            all_rows: List[Dict[str, Any]] = []
+
+            for i in range(0, len(symbols), batch_size):
+                batch = symbols[i:i + batch_size]
+                query = ','.join(batch)
+                url = f'https://qt.gtimg.cn/q={query}'
+                try:
+                    resp = session.get(url, timeout=20)
+                    resp.encoding = 'gbk'
+                    lines = resp.text.strip().split(';')
+                    for line in lines:
+                        line = line.strip()
+                        if not line or '=' not in line:
+                            continue
+                        val_part = line.split('=', 1)[1].strip('"')
+                        if not val_part:
+                            continue
+                        fields = val_part.split('~')
+                        if len(fields) < 35:
+                            continue
+                        code = fields[2]
+                        name = fields[1]
+                        price = self._safe_float(fields[3])
+                        pre_close = self._safe_float(fields[4])
+                        if price is None or price <= 0:
+                            continue
+                        change_pct = self._safe_float(fields[32])
+                        volume = self._safe_int(fields[36]) if len(fields) > 36 else 0
+                        amount = self._safe_float(fields[37]) if len(fields) > 37 else 0
+                        turnover_rate = self._safe_float(fields[38]) if len(fields) > 38 else 0
+                        high = self._safe_float(fields[33]) if len(fields) > 33 else None
+                        low = self._safe_float(fields[34]) if len(fields) > 34 else None
+                        total_mv_yi = self._safe_float(fields[44]) if len(fields) > 44 else None
+                        pe_ratio = self._safe_float(fields[39]) if len(fields) > 39 else None
+                        pb_ratio = self._safe_float(fields[46]) if len(fields) > 46 else None
+
+                        all_rows.append({
+                            'code': code,
+                            '名称': name,
+                            '收盘价': price,
+                            '涨跌幅': change_pct if change_pct is not None else 0,
+                            '换手率': turnover_rate if turnover_rate is not None else 0,
+                            '市盈率-动态': pe_ratio if pe_ratio is not None else 0,
+                            '市净率': pb_ratio if pb_ratio is not None else 0,
+                            '总市值': total_mv_yi * 1e8 if total_mv_yi else 0,
+                        })
+                except Exception as batch_e:
+                    logger.warning("[PoolInit] 腾讯行情批次 %d 获取失败: %s", i // batch_size, batch_e)
+
+            if not all_rows:
+                return None
+
+            df = pd.DataFrame(all_rows)
+            df = df.dropna(subset=['收盘价'])
+            df = df[df['code'].str.match(r'^[03689]\d{5}$')]
+            logger.info("[PoolInit] 腾讯行情解析完成: %d 只股票", len(df))
+            return df
+        except Exception as e:
+            logger.warning("[PoolInit] 腾讯全市场行情获取失败: %s", e)
+            return None
+
+    def _get_all_a_stock_codes(self) -> List[str]:
+        try:
+            from data_provider.tushare_fetcher import TushareFetcher
+            fetcher = TushareFetcher()
+            if not fetcher.is_available():
+                return []
+            stock_list = fetcher.get_stock_list()
+            if stock_list is not None and not stock_list.empty:
+                return stock_list['code'].tolist()
+        except Exception:
+            pass
+        return []
+
+    @staticmethod
+    def _safe_float(val) -> Optional[float]:
+        try:
+            v = float(val)
+            return v if v != 0 or str(val) == '0' else None
+        except (ValueError, TypeError):
+            return None
+
+    @staticmethod
+    def _safe_int(val) -> int:
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            return 0
 
     def _fetch_last_trading_day_quotes(self) -> Optional[pd.DataFrame]:
         try:
@@ -291,11 +556,18 @@ class StockPoolInitializer:
             if not trade_dates:
                 return None
 
-            last_date = trade_dates[0]
-            logger.info("[PoolInit] 使用 tushare daily 获取最近交易日(%s)...", last_date)
+            df = None
+            tried_dates: List[str] = []
+            for last_date in trade_dates[:5]:
+                tried_dates.append(last_date)
+                logger.info("[PoolInit] 使用 tushare daily 获取交易日(%s)...", last_date)
+                df = fetcher._call_api_with_rate_limit("daily", start_date=last_date, end_date=last_date)
+                if df is not None and not df.empty:
+                    break
+                logger.warning("[PoolInit] tushare daily %s 无数据，尝试前一交易日", last_date)
 
-            df = fetcher._call_api_with_rate_limit("daily", start_date=last_date, end_date=last_date)
             if df is None or df.empty:
+                logger.warning("[PoolInit] tushare daily 尝试 %s 均无数据", tried_dates)
                 return None
 
             stock_list = fetcher.get_stock_list()
@@ -358,6 +630,7 @@ class StockPoolInitializer:
         turnover_col = self._detect_column(result, ['换手率', 'turnover_rate'])
         pe_col = self._detect_column(result, ['市盈率-动态', 'pe_ratio', '市盈率'])
         pb_col = self._detect_column(result, ['市净率', 'pb_ratio'])
+        pct_chg_col = self._detect_column(result, ['涨跌幅', 'change_pct'])
 
         if code_col is None:
             return pd.DataFrame()
@@ -373,23 +646,30 @@ class StockPoolInitializer:
 
         if price_col:
             result['_price'] = pd.to_numeric(result[price_col], errors='coerce')
-            result = result[(result['_price'] >= 2.0) & (result['_price'] <= 200.0)]
+            result = result[(result['_price'] >= 1.0)]
 
         if market_cap_col:
             result['_market_cap'] = pd.to_numeric(result[market_cap_col], errors='coerce')
-            result = result[(result['_market_cap'] >= 20e8) & (result['_market_cap'] <= 8000e8)]
+            result = result[(result['_market_cap'] >= 10e8)]
 
         if turnover_col:
             result['_turnover_rate'] = pd.to_numeric(result[turnover_col], errors='coerce')
-            result = result[(result['_turnover_rate'] >= 0.5)]
+            result = result[(result['_turnover_rate'] >= 0.3)]
 
         if pe_col:
             result['_pe_ratio'] = pd.to_numeric(result[pe_col], errors='coerce')
-            result = result[(result['_pe_ratio'] >= 0) & (result['_pe_ratio'] <= 300)]
+        else:
+            result['_pe_ratio'] = 0.0
 
         if pb_col:
             result['_pb_ratio'] = pd.to_numeric(result[pb_col], errors='coerce')
-            result = result[(result['_pb_ratio'] >= 0) & (result['_pb_ratio'] <= 30)]
+        else:
+            result['_pb_ratio'] = 0.0
+
+        if pct_chg_col:
+            result['_pct_chg'] = pd.to_numeric(result[pct_chg_col], errors='coerce').fillna(0)
+        else:
+            result['_pct_chg'] = 0.0
 
         result = result.dropna(subset=['_price'] if '_price' in result.columns else ['_code'])
         return result
@@ -418,16 +698,24 @@ class StockPoolInitializer:
             score += 2
         elif 20e8 <= market_cap < 50e8:
             score += 1
-
-        if 5 <= pe <= 40:
-            score += 2
-        elif 40 < pe <= 80:
+        elif market_cap >= 2000e8:
             score += 1
 
-        if 0.5 <= pb <= 5:
-            score += 2
-        elif 5 < pb <= 10:
+        if pe > 0:
+            if 5 <= pe <= 40:
+                score += 2
+            elif 40 < pe <= 80:
+                score += 1
+        elif pe <= 0:
             score += 1
+
+        if pb > 0:
+            if 0.5 <= pb <= 5:
+                score += 2
+            elif 5 < pb <= 10:
+                score += 1
+        elif pb <= 0:
+            score += 0
 
         if turnover >= 2:
             score += 1
@@ -436,36 +724,76 @@ class StockPoolInitializer:
             return "premium"
         if score >= 3:
             return "standard"
-        return "marginal"
+        return "speculative"
 
-    def _compute_base_score(self, turnover: float, pct_chg: float, pe: float, pb: float, market_cap: float) -> float:
+    def _compute_valuation_score(self, pe: float, pb: float, market_cap: float) -> float:
         score = 0.0
-        if turnover >= 3:
-            score += 20
-        elif turnover >= 1.5:
-            score += 10
+        if pe > 0:
+            if 5 <= pe <= 20:
+                score += 25
+            elif 20 < pe <= 40:
+                score += 18
+            elif 40 < pe <= 80:
+                score += 10
+            elif 80 < pe <= 150:
+                score += 5
+        else:
+            if market_cap >= 100e8:
+                score += 8
+            elif market_cap >= 30e8:
+                score += 5
+            else:
+                score += 2
 
-        if -3 <= pct_chg <= 5:
-            score += 15
-        elif pct_chg > 5:
-            score += 5
+        if pb > 0:
+            if 0.5 <= pb <= 2:
+                score += 20
+            elif 2 < pb <= 5:
+                score += 14
+            elif 5 < pb <= 10:
+                score += 8
+            elif 10 < pb <= 20:
+                score += 4
 
-        if 5 <= pe <= 30:
-            score += 20
-        elif 30 < pe <= 60:
-            score += 10
-
-        if 0.5 <= pb <= 3:
-            score += 15
-        elif 3 < pb <= 6:
-            score += 8
-
-        if 100e8 <= market_cap <= 1000e8:
+        if 100e8 <= market_cap <= 2000e8:
             score += 15
         elif 50e8 <= market_cap < 100e8:
+            score += 10
+        elif market_cap >= 2000e8:
             score += 8
+        elif 30e8 <= market_cap < 50e8:
+            score += 6
 
-        return min(score, 100.0)
+        return min(score, 60.0)
+
+    def _compute_momentum_score(self, turnover: float, pct_chg: float) -> float:
+        score = 0.0
+        if turnover >= 5:
+            score += 18
+        elif turnover >= 3:
+            score += 12
+        elif turnover >= 1.5:
+            score += 8
+        elif turnover >= 0.5:
+            score += 4
+
+        if -2 <= pct_chg <= 3:
+            score += 12
+        elif 3 < pct_chg <= 7:
+            score += 8
+        elif -5 <= pct_chg < -2:
+            score += 6
+        elif pct_chg > 7:
+            score += 5
+        elif pct_chg < -5:
+            score += 3
+
+        return min(score, 30.0)
+
+    def _compute_base_score(self, turnover: float, pct_chg: float, pe: float, pb: float, market_cap: float) -> float:
+        val_score = self._compute_valuation_score(pe, pb, market_cap)
+        mom_score = self._compute_momentum_score(turnover, pct_chg)
+        return min(val_score + mom_score, 100.0)
 
     def _classify_and_tag(self, df: pd.DataFrame, version: str) -> List[Dict[str, Any]]:
         entries: List[Dict[str, Any]] = []
@@ -494,24 +822,44 @@ class StockPoolInitializer:
             exclude_reason = ""
             tags_list: List[str] = [board, industry, quality]
 
-            if quality == "marginal" and market_cap < 30e8:
-                is_excluded = True
-                exclude_reason = "小盘低质"
-            elif pe <= 0 and pb <= 0:
-                is_excluded = True
-                exclude_reason = "财务异常"
+            if pe <= 0:
+                tags_list.append("亏损/未盈利")
+            elif pe > 100:
+                tags_list.append("高估值")
+            elif pe <= 30:
+                tags_list.append("低估值")
+
+            if pb <= 0:
+                tags_list.append("负净资产")
+            elif pb > 10:
+                tags_list.append("高市净率")
+
+            if board == "科创板" and pe <= 0:
+                tags_list.append("科创成长")
+
+            if market_cap >= 2000e8:
+                tags_list.append("超大盘")
+            elif market_cap >= 500e8:
+                tags_list.append("大盘蓝筹")
+            elif 100e8 <= market_cap < 500e8:
+                tags_list.append("中盘成长")
+            elif market_cap < 30e8:
+                tags_list.append("微盘股")
+
+            if turnover >= 5:
+                tags_list.append("活跃换手")
             elif turnover < 0.5:
-                is_excluded = True
-                exclude_reason = "流动性不足"
+                tags_list.append("低流动性")
+
+            if abs(pct_chg) >= 9.5:
+                tags_list.append("涨跌停")
 
             if base_score >= 60:
                 tags_list.append("高分基线")
-            if turnover >= 5:
-                tags_list.append("活跃换手")
-            if 100e8 <= market_cap <= 500e8:
-                tags_list.append("中盘成长")
-            elif market_cap >= 500e8:
-                tags_list.append("大盘蓝筹")
+
+            if turnover < 0.3 and market_cap < 20e8:
+                is_excluded = True
+                exclude_reason = "极低流动性微盘"
 
             entries.append({
                 "pool_version": version,
@@ -534,6 +882,19 @@ class StockPoolInitializer:
             processed = idx + 1
             if processed % 100 == 0 or processed == total:
                 self._update_progress(processed=processed)
+                pct = 25 + (processed / total) * 50
+                self._emit_progress(
+                    status="running",
+                    progress_pct=pct,
+                    message=f"分类打标中: {processed}/{total}",
+                    stage="tagging",
+                    steps=[
+                        ScreenerStep(label="获取行情数据", status="completed", detail=""),
+                        ScreenerStep(label="基础过滤", status="completed", detail=""),
+                        ScreenerStep(label="分类打标签", status="running", detail=f"{processed}/{total}"),
+                        ScreenerStep(label="持久化存储", status="pending", detail=""),
+                    ],
+                )
 
         return entries
 

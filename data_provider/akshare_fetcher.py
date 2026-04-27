@@ -278,9 +278,17 @@ class AkshareFetcher(BaseFetcher):
         self.sleep_min = sleep_min
         self.sleep_max = sleep_max
         self._last_request_time: Optional[float] = None
-        # 东财补丁开启才执行打补丁操作
+        self._clear_proxy_env()
         if get_config().enable_eastmoney_patch:
             eastmoney_patch()
+
+    @staticmethod
+    def _clear_proxy_env() -> None:
+        """Remove HTTP proxy env vars that would route domestic API
+        requests (eastmoney, sina, tencent) through a proxy, causing
+        connection failures."""
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            os.environ.pop(key, None)
     
     def _set_random_user_agent(self) -> None:
         """
@@ -344,16 +352,17 @@ class AkshareFetcher(BaseFetcher):
         5. 处理返回数据
         """
         self._current_adjust = adjust
-        if _is_us_code(stock_code):
-            raise DataFetchError(
-                f"AkshareFetcher 不支持美股 {stock_code}，请使用 YfinanceFetcher 获取正确的复权价格"
-            )
-        elif _is_hk_code(stock_code):
-            return self._fetch_hk_data(stock_code, start_date, end_date)
-        elif _is_etf_code(stock_code):
-            return self._fetch_etf_data(stock_code, start_date, end_date)
-        else:
-            return self._fetch_stock_data(stock_code, start_date, end_date)
+        with self.no_proxy():
+            if _is_us_code(stock_code):
+                raise DataFetchError(
+                    f"AkshareFetcher 不支持美股 {stock_code}，请使用 YfinanceFetcher 获取正确的复权价格"
+                )
+            elif _is_hk_code(stock_code):
+                return self._fetch_hk_data(stock_code, start_date, end_date)
+            elif _is_etf_code(stock_code):
+                return self._fetch_etf_data(stock_code, start_date, end_date)
+            else:
+                return self._fetch_stock_data(stock_code, start_date, end_date)
     
     def _fetch_stock_data(self, stock_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         """

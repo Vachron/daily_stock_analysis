@@ -189,3 +189,24 @@ class PoolInitResponse(BaseModel):
 class PoolCancelResponse(BaseModel):
     cancelled: bool = False
     message: str = ""
+
+
+class WatchCloseRequest(BaseModel):
+    code: str = Field(..., description="股票代码")
+    exit_reason: str = Field("manual", description="退出原因")
+    strategy_tag: Optional[str] = Field(None, description="策略标签")
+
+
+class WatchCloseResponse(BaseModel):
+    code: str
+    closed: int = 0
+
+
+class WatchRemoveRequest(BaseModel):
+    code: str = Field(..., description="股票代码")
+    strategy_tag: Optional[str] = Field(None, description="策略标签")
+
+
+class WatchRemoveResponse(BaseModel):
+    code: str
+    removed: int = 0

@@ -263,6 +263,7 @@ describe('stockPoolStore', () => {
       progress: 0,
       reportType: 'detailed',
       createdAt: '2026-03-18T08:00:00Z',
+      steps: [],
     };
 
     useStockPoolStore.getState().syncTaskCreated(pendingTask);
@@ -313,6 +314,7 @@ describe('stockPoolStore', () => {
       progress: 0,
       reportType: 'detailed',
       createdAt: '2026-03-18T08:00:00Z',
+      steps: [],
     };
 
     useStockPoolStore.getState().syncTaskCreated(pendingTask);
@@ -336,6 +338,7 @@ describe('stockPoolStore', () => {
       progress: 0,
       reportType: 'detailed',
       createdAt: '2026-03-18T08:00:00Z',
+      steps: [],
     };
 
     useStockPoolStore.getState().syncTaskCreated(pendingTask);
@@ -360,6 +363,7 @@ describe('stockPoolStore', () => {
       reportType: 'detailed',
       createdAt: '2026-03-18T08:00:00Z',
       error: '分析失败',
+      steps: [],
     });
 
     const state = useStockPoolStore.getState();

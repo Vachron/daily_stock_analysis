@@ -153,6 +153,15 @@ export interface TaskStatus {
   selectionSource?: string;
 }
 
+export interface AnalysisProgressStep {
+  stage: string;
+  label: string;
+  message: string;
+  status: 'active' | 'done' | 'error';
+  timestamp: string;
+  detail?: string;
+}
+
 /** Task details used by task list and SSE events */
 export interface TaskInfo {
   taskId: string;
@@ -168,6 +177,7 @@ export interface TaskInfo {
   error?: string;
   originalQuery?: string;
   selectionSource?: string;
+  steps: AnalysisProgressStep[];
 }
 
 /** Task list response */

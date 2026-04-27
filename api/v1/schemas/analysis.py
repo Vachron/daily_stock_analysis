@@ -10,7 +10,7 @@
 3. 定义异步任务队列相关模型
 """
 
-from typing import Optional, List, Any
+from typing import Optional, List, Any, Dict
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -233,6 +233,10 @@ class TaskStatus(BaseModel):
         None,
         description="选择来源",
         pattern=SELECTION_SOURCE_PATTERN,
+    )
+    steps: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="分析步骤列表",
     )
     
     class Config:

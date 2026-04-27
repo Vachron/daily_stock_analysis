@@ -266,9 +266,14 @@ class EfinanceFetcher(BaseFetcher):
         self.sleep_min = sleep_min
         self.sleep_max = sleep_max
         self._last_request_time: Optional[float] = None
-        # 东财补丁开启才执行打补丁操作
+        self._clear_proxy_env()
         if get_config().enable_eastmoney_patch:
             eastmoney_patch()
+
+    @staticmethod
+    def _clear_proxy_env() -> None:
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            os.environ.pop(key, None)
 
     @staticmethod
     def _build_history_failure_message(

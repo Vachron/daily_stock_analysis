@@ -148,12 +148,17 @@ class TushareFetcher(BaseFetcher):
         self.date_list: Optional[List[str]] = None  # 交易日列表缓存（倒序，最新日期在前）
         self._date_list_end: Optional[str] = None  # 缓存对应的截止日期，用于跨日刷新
 
-        # 尝试初始化 API
+        self._clear_proxy_env()
         self._init_api()
 
         # 根据 API 初始化结果动态调整优先级
         self.priority = self._determine_priority()
-    
+
+    @staticmethod
+    def _clear_proxy_env() -> None:
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            os.environ.pop(key, None)
+
     def _init_api(self) -> None:
         """
         初始化 Tushare API

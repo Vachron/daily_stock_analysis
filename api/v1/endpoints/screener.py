@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import threading
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 
 from api.deps import get_database_manager
 from api.v1.schemas.screener import (
@@ -25,6 +28,10 @@ from api.v1.schemas.screener import (
     ScreenerRunResponse,
     ScreenerTrackingUpdateResponse,
     ScreenerWatchListResponse,
+    WatchCloseRequest,
+    WatchCloseResponse,
+    WatchRemoveRequest,
+    WatchRemoveResponse,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.services.screener_service import ScreenerService
@@ -309,6 +316,81 @@ def get_watch_list(
         raise HTTPException(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询失败: {str(exc)}"},
+        )
+
+
+@router.post(
+    "/watch/close",
+    response_model=WatchCloseResponse,
+    responses={
+        200: {"description": "关闭成功"},
+        404: {"description": "股票不在观察池中"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="关闭观察",
+    description="将观察池中的股票标记为已关闭（保留历史记录）",
+)
+def close_watch_stock(
+    request: WatchCloseRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> WatchCloseResponse:
+    try:
+        service = ScreenerService(db_manager)
+        result = service.close_watch_stock(
+            code=request.code,
+            exit_reason=request.exit_reason,
+            strategy_tag=request.strategy_tag,
+        )
+        if result["closed"] == 0:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": f"股票 {request.code} 不在观察池中"},
+            )
+        return WatchCloseResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"关闭观察失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"关闭失败: {str(exc)}"},
+        )
+
+
+@router.post(
+    "/watch/remove",
+    response_model=WatchRemoveResponse,
+    responses={
+        200: {"description": "移除成功"},
+        404: {"description": "股票不在观察池中"},
+        500: {"description": "服务器错误", "model": ErrorResponse},
+    },
+    summary="移除观察",
+    description="从观察池中彻底移除股票（删除记录）",
+)
+def remove_watch_stock(
+    request: WatchRemoveRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+) -> WatchRemoveResponse:
+    try:
+        service = ScreenerService(db_manager)
+        result = service.remove_watch_stock(
+            code=request.code,
+            strategy_tag=request.strategy_tag,
+        )
+        if result["removed"] == 0:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "not_found", "message": f"股票 {request.code} 不在观察池中"},
+            )
+        return WatchRemoveResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"移除观察失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"移除失败: {str(exc)}"},
         )
 
 
@@ -726,3 +808,57 @@ def generate_insights(
     t.start()
 
     return {"status": "generating", "message": f"正在为 {len(candidate_dicts)} 只股票生成 AI 洞察，请稍后通过 /insight 查看"}
+
+
+@router.get(
+    "/stream",
+    responses={
+        200: {"description": "SSE 事件流", "content": {"text/event-stream": {}}},
+    },
+    summary="选股进度 SSE 流",
+    description="通过 Server-Sent Events 实时推送股票池初始化和选股进度",
+)
+async def screener_stream():
+    from src.core.screener_progress import get_screener_broadcaster
+
+    broadcaster = get_screener_broadcaster()
+
+    async def event_generator():
+        event_queue: asyncio.Queue = asyncio.Queue()
+
+        yield f"event: connected\ndata: {json.dumps({'message': 'Connected to screener stream'})}\n\n"
+
+        pool_progress = broadcaster.get_pool_progress()
+        if pool_progress.status not in ("idle", ""):
+            yield f"event: pool_progress\ndata: {json.dumps(pool_progress.to_dict())}\n\n"
+
+        screener_progress = broadcaster.get_screener_progress()
+        if screener_progress.status not in ("idle", ""):
+            yield f"event: screener_progress\ndata: {json.dumps(screener_progress.to_dict())}\n\n"
+
+        broadcaster.subscribe(event_queue)
+
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(event_queue.get(), timeout=30)
+                    event_type = event.get("type", "unknown")
+                    event_data = event.get("data", {})
+                    yield f"event: {event_type}\ndata: {json.dumps(event_data, ensure_ascii=False)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f"event: heartbeat\ndata: {json.dumps({'timestamp': datetime.now().isoformat()})}\n\n"
+        except asyncio.CancelledError:
+            logger.debug("SSE client disconnected from screener stream")
+            raise
+        finally:
+            broadcaster.unsubscribe(event_queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

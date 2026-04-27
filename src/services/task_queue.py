@@ -42,6 +42,22 @@ def _dedupe_stock_code_key(stock_code: str) -> str:
     return canonical_stock_code(normalize_stock_code(stock_code))
 
 
+ANALYSIS_STAGES = {
+    "prepare": "准备分析",
+    "data_fetch": "数据获取",
+    "realtime_quote": "实时行情",
+    "chip": "筹码分析",
+    "fundamental": "基本面聚合",
+    "trend": "趋势分析",
+    "news": "新闻检索",
+    "agent_switch": "Agent 链路",
+    "context": "上下文整理",
+    "llm": "AI 分析",
+    "validate": "结果校验",
+    "save": "保存报告",
+}
+
+
 class TaskStatus(str, Enum):
     """Task status enumeration"""
     PENDING = "pending"        # Waiting for execution
@@ -71,6 +87,7 @@ class TaskInfo:
     completed_at: Optional[datetime] = None
     original_query: Optional[str] = None
     selection_source: Optional[str] = None
+    steps: List[Dict[str, Any]] = field(default_factory=list)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert task info into an API-friendly dictionary."""
@@ -88,6 +105,7 @@ class TaskInfo:
             "error": self.error,
             "original_query": self.original_query,
             "selection_source": self.selection_source,
+            "steps": self.steps,
         }
     
     def copy(self) -> 'TaskInfo':
@@ -107,6 +125,7 @@ class TaskInfo:
             completed_at=self.completed_at,
             original_query=self.original_query,
             selection_source=self.selection_source,
+            steps=list(self.steps),
         )
 
 
@@ -493,6 +512,8 @@ class AnalysisTaskQueue:
         progress: int,
         message: Optional[str] = None,
         *,
+        stage: Optional[str] = None,
+        detail: Optional[str] = None,
         event_type: str = "task_progress",
     ) -> Optional[TaskInfo]:
         """
@@ -513,6 +534,22 @@ class AnalysisTaskQueue:
                 changed = True
             if message is not None and message != task.message:
                 task.message = message
+                changed = True
+
+            if stage:
+                for s in task.steps:
+                    if s.get("stage") == stage and s.get("status") == "active":
+                        s["status"] = "done"
+                step_entry: Dict[str, Any] = {
+                    "stage": stage,
+                    "label": ANALYSIS_STAGES.get(stage, stage),
+                    "message": message or "",
+                    "status": "active",
+                    "timestamp": datetime.now().isoformat(),
+                }
+                if detail:
+                    step_entry["detail"] = detail
+                task.steps.append(step_entry)
                 changed = True
 
             if not changed:
@@ -564,8 +601,8 @@ class AnalysisTaskQueue:
             # 执行分析
             service = AnalysisService()
 
-            def _on_progress(progress: int, message: str) -> None:
-                self.update_task_progress(task_id, progress, message)
+            def _on_progress(progress: int, message: str, stage: Optional[str] = None, detail: Optional[str] = None) -> None:
+                self.update_task_progress(task_id, progress, message, stage=stage, detail=detail)
 
             result = service.analyze_stock(
                 stock_code=stock_code,

@@ -71,6 +71,12 @@ class BaostockFetcher(BaseFetcher):
     def __init__(self):
         """初始化 BaostockFetcher"""
         self._bs_module = None
+        self._clear_proxy_env()
+
+    @staticmethod
+    def _clear_proxy_env() -> None:
+        for key in ('http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY'):
+            os.environ.pop(key, None)
     
     def _get_baostock(self):
         """

@@ -15,6 +15,7 @@ const createTask = () => ({
   progress: 100,
   reportType: 'detailed',
   createdAt: '2026-03-18T08:00:00Z',
+  steps: [],
 });
 
 describe('useDashboardLifecycle', () => {

@@ -147,6 +147,27 @@ export interface ScreenerBacktestFeedbackResponse {
   totalChecked: number;
 }
 
+export interface WatchCloseRequest {
+  code: string;
+  exitReason?: string;
+  strategyTag?: string;
+}
+
+export interface WatchCloseResponse {
+  code: string;
+  closed: number;
+}
+
+export interface WatchRemoveRequest {
+  code: string;
+  strategyTag?: string;
+}
+
+export interface WatchRemoveResponse {
+  code: string;
+  removed: number;
+}
+
 export interface PoolStatusResponse {
   hasPool: boolean;
   status: string;

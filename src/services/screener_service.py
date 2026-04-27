@@ -164,11 +164,30 @@ class ScreenerService:
         strategy_tag: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Get all stocks currently in watch status."""
-        rows = self.repo.get_watch_list(status='watch', days=days, strategy_tag=strategy_tag)
+        rows = self.repo.get_watch_list(status='watch', days=days, strategy_tag=strategy_tag, dedup=True)
         return {
             "total": len(rows),
             "watch_list": [self._result_to_dict(r) for r in rows],
         }
+
+    def close_watch_stock(
+        self,
+        code: str,
+        exit_reason: str = 'manual',
+        strategy_tag: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Close a stock from the watch list (set status to closed)."""
+        closed = self.repo.close_watch(code, exit_reason=exit_reason, strategy_tag=strategy_tag)
+        return {"code": code, "closed": closed}
+
+    def remove_watch_stock(
+        self,
+        code: str,
+        strategy_tag: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Remove a stock from the watch list entirely (delete records)."""
+        removed = self.repo.remove_watch(code, strategy_tag=strategy_tag)
+        return {"code": code, "removed": removed}
 
     def update_tracking_from_market(self, strategy_tag: Optional[str] = None) -> Dict[str, Any]:
         """Update tracking data (return %, max return, drawdown) for all watched stocks.

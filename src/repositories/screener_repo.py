@@ -8,7 +8,7 @@ import logging
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import and_, delete, desc, func, select
+from sqlalchemy import and_, delete, desc, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from src.storage import DatabaseManager, ScreenerResult
@@ -150,8 +150,14 @@ class ScreenerRepository:
         status: str = 'watch',
         days: int = 30,
         strategy_tag: Optional[str] = None,
+        dedup: bool = True,
     ) -> List[ScreenerResult]:
-        """Get stocks currently in watch status within recent N days."""
+        """Get stocks currently in watch status within recent N days.
+
+        When *dedup* is True (default), only the most recent record per
+        stock code is returned, so the same stock does not appear multiple
+        times even if it was selected on different dates.
+        """
         cutoff = date.today() - timedelta(days=days)
         with self.db.get_session() as session:
             conditions = [
@@ -160,9 +166,31 @@ class ScreenerRepository:
             ]
             if strategy_tag:
                 conditions.append(ScreenerResult.strategy_tag == strategy_tag)
+
+            if not dedup:
+                rows = session.execute(
+                    select(ScreenerResult)
+                    .where(and_(*conditions))
+                    .order_by(desc(ScreenerResult.screen_date), ScreenerResult.rank)
+                ).scalars().all()
+                return list(rows)
+
+            latest_sub = (
+                select(
+                    ScreenerResult.id,
+                    func.row_number().over(
+                        partition_by=ScreenerResult.code,
+                        order_by=desc(ScreenerResult.screen_date),
+                    ).label('_rn'),
+                )
+                .where(and_(*conditions))
+            ).subquery()
+
             rows = session.execute(
                 select(ScreenerResult)
-                .where(and_(*conditions))
+                .select_from(ScreenerResult)
+                .join(latest_sub, ScreenerResult.id == latest_sub.c.id)
+                .where(latest_sub.c._rn == 1)
                 .order_by(desc(ScreenerResult.screen_date), ScreenerResult.rank)
             ).scalars().all()
             return list(rows)
@@ -209,6 +237,59 @@ class ScreenerRepository:
             if self.update_tracking(screen_date, code, strategy_tag, **u):
                 updated += 1
         return updated
+
+    def close_watch(
+        self,
+        code: str,
+        exit_reason: str = 'manual',
+        strategy_tag: Optional[str] = None,
+    ) -> int:
+        """Close all watch-status records for a stock code.
+
+        Sets status to 'closed' with the given exit_reason.
+        Returns the number of records closed.
+        """
+        with self.db.get_session() as session:
+            conditions = [
+                ScreenerResult.code == code,
+                ScreenerResult.status == 'watch',
+            ]
+            if strategy_tag:
+                conditions.append(ScreenerResult.strategy_tag == strategy_tag)
+            result = session.execute(
+                update(ScreenerResult)
+                .where(and_(*conditions))
+                .values(
+                    status='closed',
+                    exit_reason=exit_reason,
+                    exit_date=date.today(),
+                    updated_at=datetime.now(),
+                )
+            )
+            session.commit()
+            return result.rowcount
+
+    def remove_watch(
+        self,
+        code: str,
+        strategy_tag: Optional[str] = None,
+    ) -> int:
+        """Delete all watch-status records for a stock code.
+
+        Returns the number of records deleted.
+        """
+        with self.db.get_session() as session:
+            conditions = [
+                ScreenerResult.code == code,
+                ScreenerResult.status == 'watch',
+            ]
+            if strategy_tag:
+                conditions.append(ScreenerResult.strategy_tag == strategy_tag)
+            result = session.execute(
+                delete(ScreenerResult).where(and_(*conditions))
+            )
+            session.commit()
+            return result.rowcount
 
     def get_performance_summary(
         self,

@@ -336,6 +336,130 @@ OPENAI_MODEL=deepseek-v4-flash
 
 ---
 
+## 🖥️ 本地安装排障
+
+> 首次在新电脑上搭建开发环境？运行 `python scripts/setup_env.py` 可自动完成大部分检查和安装。
+
+### Q15.1: Windows 下 `pip install -r requirements.txt` 报 UnicodeDecodeError？
+
+**现象**：安装依赖时报错 `UnicodeDecodeError: 'gbk' codec can't decode byte ...`
+
+**原因**：Windows 中文环境下 Python 默认使用 GBK 编码读取文件，而 requirements.txt 包含 UTF-8 字符。
+
+**解决方案**：
+1. 设置环境变量后重试：
+   ```powershell
+   $env:PYTHONUTF8 = '1'
+   pip install -r requirements.txt
+   ```
+2. 或永久设置：系统属性 → 高级 → 环境变量 → 新建 `PYTHONUTF8` = `1`
+
+---
+
+### Q15.2: Windows 下 npm / npx 命令报"无法加载文件，因为在此系统上禁止运行脚本"？
+
+**现象**：执行 `npm run build` 或 `npx vite` 时 PowerShell 报执行策略错误。
+
+**原因**：Windows PowerShell 默认执行策略为 `Restricted`，阻止 `.ps1` 脚本运行。
+
+**解决方案**：
+```powershell
+# 以管理员身份运行 PowerShell，执行：
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force
+```
+
+---
+
+### Q15.3: `npm ci` 或 `npm install` 后部分包内容不完整？
+
+**现象**：npm 安装显示成功，但运行 `npm run build` 时报 `Cannot find module`，检查发现 node_modules 下某些包只有 `package.json` 没有 `lib/` 目录。
+
+**原因**：部分环境（如网络代理、杀毒软件实时扫描、磁盘 IO 延迟）可能导致 npm 解压 tar 包时文件丢失。
+
+**解决方案**：
+1. 删除 node_modules 后重新安装：
+   ```bash
+   cd apps/dsa-web
+   Remove-Item -Recurse -Force node_modules
+   npm ci
+   ```
+2. 如果 `npm ci` 仍不完整，尝试：
+   ```bash
+   npm install
+   ```
+3. 反复出现时，检查：
+   - 杀毒软件是否在实时扫描 node_modules 目录（建议加入排除列表）
+   - 磁盘空间是否充足
+   - npm 缓存是否损坏：`npm cache clean --force`
+
+---
+
+### Q15.4: `npm run build` 报 `Cannot find module '@rollup/rollup-win32-x64-msvc'`？
+
+**现象**：tsc 编译通过，但 vite build 报错缺少 rollup 原生模块。
+
+**原因**：rollup 的平台原生二进制包是 optional dependency，某些安装方式（如 `npm ci --no-optional` 或 `--omit=optional`）会跳过它。
+
+**解决方案**：
+1. 不要使用 `--no-optional` 或 `--omit=optional` 安装前端依赖
+2. 如果已安装，删除 node_modules 重新安装：
+   ```bash
+   cd apps/dsa-web
+   Remove-Item -Recurse -Force node_modules
+   npm ci
+   npm run build
+   ```
+
+---
+
+### Q15.5: 克隆项目后没有 `.env` 文件怎么办？
+
+**现象**：项目运行报错或使用默认配置。
+
+**原因**：`.env` 被 `.gitignore` 排除，不会随 git clone 下载。
+
+**解决方案**：
+1. 从模板创建：
+   ```bash
+   cp .env.example .env
+   ```
+2. 编辑 `.env` 填入你的 API Key（至少配置一个 AI 模型 Key）
+3. 或运行 `python scripts/setup_env.py` 自动创建
+
+---
+
+### Q15.6: 前端开发时如何热更新？
+
+**方法**：
+```bash
+cd apps/dsa-web
+npm run dev
+```
+Vite 开发服务器默认在 `http://localhost:5173` 启动，修改源码后自动刷新。后端 API 请求会自动代理到 `http://localhost:8000`（需同时启动后端服务）。
+
+---
+
+### Q15.7: 一键安装脚本怎么用？
+
+项目提供了 `scripts/setup_env.py` 脚本，可自动完成环境检查和依赖安装：
+
+```bash
+python scripts/setup_env.py              # 完整安装（后端 + 前端）
+python scripts/setup_env.py --backend    # 仅安装后端 Python 依赖
+python scripts/setup_env.py --frontend   # 仅安装前端并构建
+python scripts/setup_env.py --check      # 仅检查当前环境状态
+```
+
+脚本会自动检测并提示：
+- Python 版本是否满足 3.10+
+- Windows 下 PYTHONUTF8 和 PowerShell 执行策略
+- .env 文件是否已创建
+- Node.js / npm 是否已安装
+- 后端关键依赖是否完整
+- AI 模型和搜索引擎是否已配置
+
+---
+
 ## 🔧 其他问题
 
 ### Q15: 如何只运行大盘复盘，不分析个股？
@@ -387,4 +511,4 @@ python main.py --market-only
 
 ---
 
-*最后更新：2026-04-20*
+*最后更新：2026-04-27*

@@ -12,6 +12,7 @@ const baseTask: TaskInfo = {
   message: '正在抓取最新行情',
   reportType: 'detailed',
   createdAt: '2026-03-21T08:00:00Z',
+  steps: [],
 };
 
 describe('TaskPanel', () => {
@@ -55,5 +56,21 @@ describe('TaskPanel', () => {
     );
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders analysis steps for processing tasks', () => {
+    const taskWithSteps: TaskInfo = {
+      ...baseTask,
+      steps: [
+        { stage: 'data_fetch', label: '数据获取', message: '正在获取数据', status: 'done', timestamp: '2026-03-21T08:00:01Z', detail: '数据源: tushare' },
+        { stage: 'realtime_quote', label: '实时行情', message: '获取实时行情', status: 'active', timestamp: '2026-03-21T08:00:02Z' },
+      ],
+    };
+
+    render(<TaskPanel tasks={[taskWithSteps]} />);
+
+    expect(screen.getByText('数据获取')).toBeInTheDocument();
+    expect(screen.getByText('实时行情')).toBeInTheDocument();
+    expect(screen.getByText('· 数据源: tushare')).toBeInTheDocument();
   });
 });

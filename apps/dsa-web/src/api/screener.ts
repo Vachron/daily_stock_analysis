@@ -14,6 +14,10 @@ import type {
   PoolInitResponse,
   PoolCancelResponse,
   ScreenerInsightItem,
+  WatchCloseRequest,
+  WatchCloseResponse,
+  WatchRemoveRequest,
+  WatchRemoveResponse,
 } from '../types/screener';
 
 export const screenerApi = {
@@ -78,6 +82,29 @@ export const screenerApi = {
       { params },
     );
     return toCamelCase<ScreenerWatchListResponse>(response.data);
+  },
+
+  closeWatch: async (request: WatchCloseRequest): Promise<WatchCloseResponse> => {
+    const requestData: Record<string, unknown> = {
+      code: request.code,
+      exit_reason: request.exitReason || 'manual',
+    };
+    if (request.strategyTag) requestData.strategy_tag = request.strategyTag;
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/screener/watch/close',
+      requestData,
+    );
+    return toCamelCase<WatchCloseResponse>(response.data);
+  },
+
+  removeWatch: async (request: WatchRemoveRequest): Promise<WatchRemoveResponse> => {
+    const requestData: Record<string, unknown> = { code: request.code };
+    if (request.strategyTag) requestData.strategy_tag = request.strategyTag;
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/screener/watch/remove',
+      requestData,
+    );
+    return toCamelCase<WatchRemoveResponse>(response.data);
   },
 
   updateTracking: async (): Promise<ScreenerTrackingUpdateResponse> => {

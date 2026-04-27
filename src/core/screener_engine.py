@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FuturesTimeout, as_completed
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -27,18 +27,18 @@ logger = logging.getLogger(__name__)
 @dataclass
 class ScreenerConfig:
     top_n: int = 10
-    min_market_cap: float = 30e8
-    max_market_cap: float = 5000e8
-    min_turnover_rate: float = 1.0
-    max_turnover_rate: float = 25.0
-    min_pe: float = 0.0
-    max_pe: float = 200.0
-    min_pb: float = 0.0
-    max_pb: float = 20.0
+    min_market_cap: float = 20e8
+    max_market_cap: float = 30000e8
+    min_turnover_rate: float = 0.5
+    max_turnover_rate: float = 50.0
+    min_pe: float = -1000.0
+    max_pe: float = 1000.0
+    min_pb: float = -100.0
+    max_pb: float = 100.0
     exclude_st: bool = True
     exclude_new_stock_days: int = 60
-    min_price: float = 3.0
-    max_price: float = 100.0
+    min_price: float = 1.0
+    max_price: float = 5000.0
     strategy_tag: str = "daily_pick"
     scan_mode: str = "quality_only"
     use_optimized_weights: bool = True
@@ -113,10 +113,25 @@ class ScreenerEngine:
     def _run_pool_scan(self, demo: bool = False) -> ScreenerRunResult:
         """Quick scan using the pre-built stock pool with tag filters."""
         from src.core.stock_pool import StockPoolInitializer
+        from src.core.screener_progress import ScreenerStep
 
         cfg = self.config
         logger.info("[Screener] 使用股票池快速扫描 (boards=%s, industries=%s, qualities=%s)...",
                      cfg.pool_boards, cfg.pool_industries, cfg.pool_qualities)
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=0,
+            message="正在从股票池筛选候选股...",
+            stage="pool_filter",
+            steps=[
+                ScreenerStep(label="股票池筛选", status="running", detail=""),
+                ScreenerStep(label="市场状态检测", status="pending", detail=""),
+                ScreenerStep(label="获取历史数据", status="pending", detail=""),
+                ScreenerStep(label="策略信号评分", status="pending", detail=""),
+                ScreenerStep(label="排序筛选", status="pending", detail=""),
+            ],
+        )
 
         pool = StockPoolInitializer.get_instance()
         pool_entries = pool.get_pool_codes(
@@ -133,6 +148,19 @@ class ScreenerEngine:
             return self._run_full_scan(demo=demo)
 
         logger.info("[Screener] 股票池筛选出 %d 只股票", len(pool_entries))
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=3,
+            message=f"股票池筛选出 {len(pool_entries)} 只候选股",
+            stage="pool_filter",
+            steps=[
+                ScreenerStep(label="股票池筛选", status="completed", detail=f"{len(pool_entries)} 只"),
+                ScreenerStep(label="市场状态检测", status="running", detail=""),
+                ScreenerStep(label="获取历史数据", status="pending", detail=""),
+                ScreenerStep(label="策略信号评分", status="pending", detail=""),
+                ScreenerStep(label="排序筛选", status="pending", detail=""),
+            ],
+        )
 
         regime_result = self._detect_market_regime()
         logger.info("[Screener] 市场状态: %s (%s)", regime_result.regime, regime_result.label)
@@ -152,6 +180,20 @@ class ScreenerEngine:
         top = candidates[:cfg.top_n]
 
         self._persist_top_daily_data(top, history_cache)
+
+        self._emit_screener_progress(
+            status="completed",
+            progress_pct=100,
+            message=f"选股完成: Top {len(top)} 只股票",
+            stage="completed",
+            steps=[
+                ScreenerStep(label="股票池筛选", status="completed", detail=f"{len(pool_entries)} 只"),
+                ScreenerStep(label="市场状态检测", status="completed", detail=regime_result.label),
+                ScreenerStep(label="获取历史数据", status="completed", detail=f"成功 {len(history_cache)} 只"),
+                ScreenerStep(label="策略信号评分", status="completed", detail=f"评分 {len(candidates)} 只"),
+                ScreenerStep(label="排序筛选", status="completed", detail=f"Top {len(top)}"),
+            ],
+        )
 
         logger.info("[Screener] 股票池快速扫描选出 Top %d 只股票", len(top))
         for c in top:
@@ -195,11 +237,11 @@ class ScreenerEngine:
             quality_summary[qs.tier] = quality_summary.get(qs.tier, 0) + 1
 
         logger.info(
-            "[Screener] 质量分级后剩余 %d 只 (优质=%d, 标准=%d, 边缘=%d, 排除=%d)",
+            "[Screener] 质量分级后剩余 %d 只 (优质=%d, 标准=%d, 投机=%d, 排除=%d)",
             len(quality_df),
             quality_summary.get("premium", 0),
             quality_summary.get("standard", 0),
-            quality_summary.get("marginal", 0),
+            quality_summary.get("speculative", 0),
             quality_summary.get("excluded", 0),
         )
 
@@ -248,6 +290,11 @@ class ScreenerEngine:
             optimized_weights_applied=optimized_applied,
         )
 
+    def _emit_screener_progress(self, **kwargs: Any) -> None:
+        from src.core.screener_progress import get_screener_broadcaster
+        broadcaster = get_screener_broadcaster()
+        broadcaster.update_screener_progress(**kwargs)
+
     def _score_pool_entries(
         self,
         pool_entries: List[Dict[str, Any]],
@@ -257,6 +304,7 @@ class ScreenerEngine:
         """Score pool entries using strategy signals (same as _score_and_rank but from pool data)."""
         from src.core.strategy_signal_extractor import StrategySignalExtractor
         from src.core.market_regime import DynamicWeightAdjuster
+        from src.core.screener_progress import ScreenerStep
 
         regime = regime_result.regime if regime_result else "sideways"
         regime_label = regime_result.label if regime_result else ""
@@ -264,11 +312,89 @@ class ScreenerEngine:
         if optimized_weights:
             adjuster.base_weights = optimized_weights
 
+        total = len(pool_entries)
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=5,
+            message=f"开始获取 {total} 只股票历史数据...",
+            stage="fetch_history",
+            steps=[
+                ScreenerStep(label="获取历史数据", status="running", detail=f"0/{total}"),
+                ScreenerStep(label="策略信号评分", status="pending", detail=""),
+                ScreenerStep(label="排序筛选", status="pending", detail=""),
+            ],
+        )
+
         history_cache: Dict[str, pd.DataFrame] = {}
+        failed_codes: Set[str] = set()
+        fetch_failures: List[DataFetchFailure] = []
+
+        def _fetch_one(entry: Dict[str, Any]) -> Tuple[str, Optional[pd.DataFrame], str]:
+            code = entry["code"]
+            name = entry.get("name", "")
+            try:
+                df = self._fetch_stock_history(code)
+                if df is not None and len(df) < 20:
+                    return code, None, f"数据条数不足({len(df)}<20)"
+                return code, df, ""
+            except Exception as e:
+                return code, None, str(e)
+
+        max_workers = min(8, max(2, total // 20))
+        fetched = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(_fetch_one, e): e for e in pool_entries}
+            for future in as_completed(future_map):
+                entry = future_map[future]
+                code = entry["code"]
+                name = entry.get("name", "")
+                try:
+                    ret_code, hist_df, fail_msg = future.result(timeout=20)
+                    if hist_df is not None and not hist_df.empty:
+                        history_cache[code] = hist_df
+                    else:
+                        failed_codes.add(code)
+                        fetch_failures.append(DataFetchFailure(
+                            code=code, name=name,
+                            reason=fail_msg or "历史数据获取失败",
+                            fallback="base_factor_penalized",
+                        ))
+                except Exception as e:
+                    failed_codes.add(code)
+                    fetch_failures.append(DataFetchFailure(
+                        code=code, name=name,
+                        reason=str(e),
+                        fallback="base_factor_penalized",
+                    ))
+                fetched += 1
+                if fetched % 20 == 0 or fetched == total:
+                    pct = 5 + (fetched / total) * 50
+                    self._emit_screener_progress(
+                        status="running",
+                        progress_pct=pct,
+                        message=f"获取历史数据: {fetched}/{total}",
+                        stage="fetch_history",
+                        steps=[
+                            ScreenerStep(label="获取历史数据", status="running", detail=f"{fetched}/{total}"),
+                            ScreenerStep(label="策略信号评分", status="pending", detail=""),
+                            ScreenerStep(label="排序筛选", status="pending", detail=""),
+                        ],
+                    )
+
+        self._emit_screener_progress(
+            status="running",
+            progress_pct=55,
+            message=f"历史数据获取完成: {len(history_cache)} 只成功, {len(failed_codes)} 只失败",
+            stage="fetch_history",
+            steps=[
+                ScreenerStep(label="获取历史数据", status="completed", detail=f"成功 {len(history_cache)}/{total}"),
+                ScreenerStep(label="策略信号评分", status="running", detail=""),
+                ScreenerStep(label="排序筛选", status="pending", detail=""),
+            ],
+        )
 
         candidates = []
-        data_failures: List[DataFetchFailure] = []
-        total = len(pool_entries)
+        data_failures: List[DataFetchFailure] = list(fetch_failures)
         processed = 0
 
         for entry in pool_entries:
@@ -282,15 +408,8 @@ class ScreenerEngine:
             base_score = entry.get("base_score", 0)
 
             strategy_scores: Dict[str, Any] = {}
-            if code in failed_codes:
-                hist_df = None
-                skipped_count += 1
-            else:
-                hist_df = self._fetch_stock_history(code)
-                if hist_df is None or (hist_df is not None and len(hist_df) < 20):
-                    failed_codes.add(code)
-            if hist_df is not None and not hist_df.empty:
-                history_cache[code] = hist_df
+            hist_df = history_cache.get(code)
+
             realtime_info = {
                 "turnover_rate": turnover_rate,
                 "pct_chg": 0,
@@ -331,7 +450,8 @@ class ScreenerEngine:
                 fail_reason = "历史数据不足" if hist_df is None else f"数据条数不足({len(hist_df) if hist_df is not None else 0}<20)"
                 penalty = 0.6
                 final_score = base_score * penalty
-                data_failures.append(DataFetchFailure(code=code, name=name, reason=fail_reason, fallback="base_factor_penalized"))
+                if not any(f.code == code for f in data_failures):
+                    data_failures.append(DataFetchFailure(code=code, name=name, reason=fail_reason, fallback="base_factor_penalized"))
 
             candidates.append(ScreenerCandidate(
                 code=code,
@@ -353,8 +473,19 @@ class ScreenerEngine:
             ))
 
             processed += 1
-            if processed % 50 == 0:
-                logger.debug("[Screener] 股票池评分进度: %d/%d", processed, total)
+            if processed % 50 == 0 or processed == total:
+                pct = 55 + (processed / total) * 35
+                self._emit_screener_progress(
+                    status="running",
+                    progress_pct=pct,
+                    message=f"策略评分: {processed}/{total}",
+                    stage="scoring",
+                    steps=[
+                        ScreenerStep(label="获取历史数据", status="completed", detail=f"成功 {len(history_cache)}/{total}"),
+                        ScreenerStep(label="策略信号评分", status="running", detail=f"{processed}/{total}"),
+                        ScreenerStep(label="排序筛选", status="pending", detail=""),
+                    ],
+                )
 
         candidates.sort(key=lambda c: c.score, reverse=True)
         for i, c in enumerate(candidates, 1):

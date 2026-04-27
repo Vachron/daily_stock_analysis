@@ -15,8 +15,10 @@
 """
 
 import logging
+import os
 import random
 import time
+from contextlib import contextmanager
 from threading import BoundedSemaphore, RLock, Thread
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -252,7 +254,23 @@ class BaseFetcher(ABC):
     """
     
     name: str = "BaseFetcher"
-    priority: int = 99  # 优先级数字越小越优先
+    priority: int = 99
+
+    @contextmanager
+    def no_proxy(self):
+        """Temporarily remove HTTP proxy env vars so domestic data sources
+        bypass any system-level proxy (e.g. Clash, V2Ray) that may block
+        or misroute requests to Chinese financial APIs."""
+        proxy_keys = [
+            'http_proxy', 'https_proxy', 'HTTP_PROXY', 'HTTPS_PROXY',
+        ]
+        saved = {k: os.environ.pop(k, None) for k in proxy_keys}
+        try:
+            yield
+        finally:
+            for k, v in saved.items():
+                if v is not None:
+                    os.environ[k] = v
     
     @abstractmethod
     def _fetch_raw_data(self, stock_code: str, start_date: str, end_date: str,

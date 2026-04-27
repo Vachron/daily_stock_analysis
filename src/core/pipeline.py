@@ -74,7 +74,7 @@ class StockAnalysisPipeline:
         query_id: Optional[str] = None,
         query_source: Optional[str] = None,
         save_context_snapshot: Optional[bool] = None,
-        progress_callback: Optional[Callable[[int, str], None]] = None,
+        progress_callback: Optional[Callable[..., None]] = None,
     ):
         """
         初始化调度器
@@ -154,13 +154,13 @@ class StockAnalysisPipeline:
             )
             self.social_sentiment_service = None
 
-    def _emit_progress(self, progress: int, message: str) -> None:
+    def _emit_progress(self, progress: int, message: str, stage: Optional[str] = None, detail: Optional[str] = None) -> None:
         """Best-effort bridge from pipeline stages to task SSE progress."""
         callback = getattr(self, "progress_callback", None)
         if callback is None:
             return
         try:
-            callback(progress, message)
+            callback(progress, message, stage=stage, detail=detail)
         except Exception as exc:
             query_id = getattr(self, "query_id", None)
             logger.warning(
@@ -254,7 +254,7 @@ class StockAnalysisPipeline:
         """
         stock_name = code
         try:
-            self._emit_progress(18, f"{code}：正在获取行情与筹码数据")
+            self._emit_progress(18, f"{code}：正在获取行情与筹码数据", stage="data_fetch")
             # 获取股票名称（先走轻量名称路径，后续若 realtime_quote 有 name 再覆盖）
             stock_name = self.fetcher_manager.get_stock_name(code, allow_realtime=False)
 
@@ -284,6 +284,12 @@ class StockAnalysisPipeline:
             if not stock_name:
                 stock_name = f'股票{code}'
 
+            if realtime_quote:
+                src_name = realtime_quote.source.value if hasattr(realtime_quote, 'source') else 'unknown'
+                self._emit_progress(22, f"{stock_name}：实时行情获取成功", stage="realtime_quote", detail=f"数据源: {src_name}")
+            elif self.config.enable_realtime_quote:
+                self._emit_progress(22, f"{stock_name}：实时行情不可用，使用历史数据", stage="realtime_quote", detail="已降级为历史收盘价")
+
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             chip_data = None
             try:
@@ -295,6 +301,11 @@ class StockAnalysisPipeline:
                     logger.debug(f"{stock_name}({code}) 筹码分布获取失败或已禁用")
             except Exception as e:
                 logger.warning(f"{stock_name}({code}) 获取筹码分布失败: {e}")
+
+            if chip_data:
+                self._emit_progress(28, f"{stock_name}：筹码分布获取成功", stage="chip", detail=f"获利比例={chip_data.profit_ratio:.1%}")
+            else:
+                self._emit_progress(28, f"{stock_name}：筹码分布不可用", stage="chip", detail="跳过筹码分析")
 
             # If agent mode is explicitly enabled, or specific agent skills are configured, use the Agent analysis pipeline.
             # NOTE: use config.agent_mode (explicit opt-in) instead of
@@ -309,7 +320,7 @@ class StockAnalysisPipeline:
                     use_agent = True
                     logger.info(f"{stock_name}({code}) Auto-enabled agent mode due to configured skills: {configured_skills}")
 
-            self._emit_progress(32, f"{stock_name}：正在聚合基本面与趋势数据")
+            self._emit_progress(32, f"{stock_name}：正在聚合基本面与趋势数据", stage="fundamental")
 
             # Step 2.5: 基本面能力聚合（统一入口，异常降级）
             # - 失败时返回 partial/failed，不影响既有技术面/新闻链路
@@ -363,7 +374,7 @@ class StockAnalysisPipeline:
 
             if use_agent:
                 logger.info(f"{stock_name}({code}) 启用 Agent 模式进行分析")
-                self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路")
+                self._emit_progress(58, f"{stock_name}：正在切换 Agent 分析链路", stage="agent_switch")
                 return self._analyze_with_agent(
                     code,
                     report_type,
@@ -377,7 +388,7 @@ class StockAnalysisPipeline:
 
             # Step 4: 多维度情报搜索（最新消息+风险排查+业绩预期）
             news_context = None
-            self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情")
+            self._emit_progress(46, f"{stock_name}：正在检索新闻与舆情", stage="news")
             if self.search_service is not None and self.search_service.is_available:
                 logger.info(f"{stock_name}({code}) 开始多维度情报搜索...")
 
@@ -429,7 +440,7 @@ class StockAnalysisPipeline:
                     logger.warning(f"{stock_name}({code}) Social sentiment fetch failed: {e}")
 
             # Step 5: 获取分析上下文（技术面数据）
-            self._emit_progress(58, f"{stock_name}：正在整理分析上下文")
+            self._emit_progress(58, f"{stock_name}：正在整理分析上下文", stage="context")
             context = self.db.get_analysis_context(code)
 
             if context is None:
@@ -467,9 +478,10 @@ class StockAnalysisPipeline:
                 self._emit_progress(
                     dynamic_progress,
                     f"{stock_name}：LLM 正在生成分析结果（已接收 {chars_received} 字符）",
+                    stage="llm",
                 )
 
-            self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告")
+            self._emit_progress(64, f"{stock_name}：正在请求 LLM 生成报告", stage="llm")
             result = self.analyzer.analyze(
                 enhanced_context,
                 news_context=news_context,
@@ -479,7 +491,7 @@ class StockAnalysisPipeline:
 
             # Step 7.5: 填充分析时的价格信息到 result
             if result:
-                self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果")
+                self._emit_progress(94, f"{stock_name}：正在校验并整理分析结果", stage="validate")
                 result.query_id = query_id
                 realtime_data = enhanced_context.get('realtime', {})
                 result.current_price = realtime_data.get('price')
@@ -496,7 +508,7 @@ class StockAnalysisPipeline:
             # Step 8: 保存分析历史记录
             if result and result.success:
                 try:
-                    self._emit_progress(97, f"{stock_name}：正在保存分析报告")
+                    self._emit_progress(97, f"{stock_name}：正在保存分析报告", stage="save")
                     context_snapshot = self._build_context_snapshot(
                         enhanced_context=enhanced_context,
                         news_content=news_context,
@@ -1236,7 +1248,7 @@ class StockAnalysisPipeline:
         frozen_td = self._resolve_resume_target_date(code, current_time=current_time)
         token = set_frozen_target_date(frozen_td)
         try:
-            self._emit_progress(12, f"{code}：正在准备分析任务")
+            self._emit_progress(12, f"{code}：正在准备分析任务", stage="prepare")
             # Step 1: 获取并保存数据
             success, error = self.fetch_and_save_stock_data(
                 code, current_time=current_time
@@ -1246,7 +1258,7 @@ class StockAnalysisPipeline:
                 logger.warning(f"[{code}] 数据获取失败: {error}")
                 # 即使获取失败，也尝试用已有数据分析
             else:
-                self._emit_progress(16, f"{code}：行情数据准备完成")
+                self._emit_progress(16, f"{code}：行情数据准备完成", stage="data_fetch", detail="历史数据已就绪")
             
             # Step 2: AI 分析
             if skip_analysis:

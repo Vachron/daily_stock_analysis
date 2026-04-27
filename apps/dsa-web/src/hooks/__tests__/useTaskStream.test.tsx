@@ -95,6 +95,7 @@ describe('useTaskStream', () => {
       error: undefined,
       originalQuery: undefined,
       selectionSource: undefined,
+      steps: [],
     });
   });
 });

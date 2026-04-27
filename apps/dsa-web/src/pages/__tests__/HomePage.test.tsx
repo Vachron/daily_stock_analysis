@@ -261,6 +261,7 @@ describe('HomePage', () => {
           message: '正在抓取最新行情',
           reportType: 'detailed',
           createdAt: '2026-03-18T08:00:00Z',
+          steps: [],
         },
       ],
     });
