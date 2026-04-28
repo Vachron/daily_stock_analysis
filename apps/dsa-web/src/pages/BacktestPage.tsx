@@ -703,7 +703,7 @@ const BacktestPage: React.FC = () => {
                         <YAxis hide domain={['auto', 'auto']} />
                         <RechartsTooltip
                           contentStyle={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
-                          formatter={(v: number | string) => [`¥${Number(v).toFixed(0)}`, 'NAV']}
+                          formatter={(v) => [`¥${Number(v ?? 0).toFixed(0)}`, 'NAV']}
                         />
                         <Line type="monotone" dataKey="nav" stroke="#22d3ee" strokeWidth={1.5} dot={false} />
                       </ComposedChart>
