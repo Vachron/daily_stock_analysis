@@ -28,9 +28,12 @@ import {
   ArrowUpDown,
   Download,
   Loader2,
+  Scale,
+  ZoomIn,
 } from 'lucide-react';
 import { screenerApi } from '../api/screener';
 import { getParsedApiError } from '../api/error';
+import apiClient from '../api/index';
 import type { ParsedApiError } from '../api/error';
 import type { PoolStatusResponse, PoolSummaryResponse } from '../types/screener';
 import { useScreenerStream } from '../hooks/useScreenerStream';
@@ -43,6 +46,9 @@ import {
   Tooltip,
   ConfirmDialog,
 } from '../components/common';
+import { ScoreBreakdown } from '../components/screener/ScoreBreakdown';
+import type { ScoreBreakdownData } from '../components/screener/ScoreBreakdown';
+import { StrategyWeightPanel } from '../components/screener/StrategyWeightPanel';
 import type {
   ScreenerPickItem,
   ScreenerPerformanceResponse,
@@ -238,6 +244,10 @@ const ScreenerPage: React.FC = () => {
   const [poolStatus, setPoolStatus] = useState<PoolStatusResponse | null>(null);
   const [poolSummary, setPoolSummary] = useState<PoolSummaryResponse | null>(null);
   const [isInitingPool, setIsInitingPool] = useState(false);
+
+  const [weightPanelVisible, setWeightPanelVisible] = useState(false);
+  const [scoreBreakdownData, setScoreBreakdownData] = useState<ScoreBreakdownData | null>(null);
+  const [isLoadingScoreBreakdown, setIsLoadingScoreBreakdown] = useState(false);
   const [showPoolPanel, setShowPoolPanel] = useState(false);
   const poolPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -651,6 +661,24 @@ const ScreenerPage: React.FC = () => {
     }
   };
 
+  const handleShowScoreBreakdown = useCallback(async (code: string) => {
+    setIsLoadingScoreBreakdown(true);
+    setScoreBreakdownData(null);
+    try {
+      const response = await apiClient.get<Record<string, unknown>>(
+        `/api/v1/screener/picks/${encodeURIComponent(code)}/score-breakdown`,
+      );
+      const bd = response.data?.breakdown as Record<string, unknown> | undefined;
+      if (bd) {
+        setScoreBreakdownData(bd as unknown as ScoreBreakdownData);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingScoreBreakdown(false);
+    }
+  }, []);
+
   const handleInitPool = async () => {
     setIsInitingPool(true);
     try {
@@ -748,6 +776,15 @@ const ScreenerPage: React.FC = () => {
             </>
           )}
           <div className="flex-1" />
+          <button
+            type="button"
+            onClick={() => setWeightPanelVisible(true)}
+            className="btn-secondary flex items-center gap-1.5 text-xs"
+            title="策略权重管理"
+          >
+            <Scale className="h-3.5 w-3.5" />
+            权重
+          </button>
           {sortedPicks.length > 0 && (
             <button
               type="button"
@@ -893,6 +930,15 @@ const ScreenerPage: React.FC = () => {
                         >
                           <MessageSquare className="h-3.5 w-3.5" />
                           问股
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleShowScoreBreakdown(item.code)}
+                          className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
+                          title="得分拆解"
+                        >
+                          <ZoomIn className="h-3.5 w-3.5" />
+                          得分
                         </button>
                         {insightMap[item.code] ? (
                           <button
@@ -1891,6 +1937,15 @@ const ScreenerPage: React.FC = () => {
         isDanger={watchConfirm?.type === 'remove'}
         onConfirm={handleWatchConfirm}
         onCancel={() => setWatchConfirm(null)}
+      />
+      <ScoreBreakdown
+        data={scoreBreakdownData}
+        isLoading={isLoadingScoreBreakdown}
+        onClose={() => { setScoreBreakdownData(null); setIsLoadingScoreBreakdown(false); }}
+      />
+      <StrategyWeightPanel
+        visible={weightPanelVisible}
+        onClose={() => setWeightPanelVisible(false)}
       />
     </div>
   );

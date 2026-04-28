@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Play, RotateCcw, ChevronDown, ChevronUp, TrendingUp, TrendingDown,
-  Activity, Target, Zap, Shield, BarChart3, X,
+  Activity, Target, Zap, Shield, BarChart3, X, Database,
 } from 'lucide-react';
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
@@ -315,6 +315,58 @@ const BacktestPage: React.FC = () => {
 
   const [showAdvanced, setShowAdvanced] = useState(false);
 
+  const [backtestMode, setBacktestMode] = useState<'verify' | 'portfolio'>('verify');
+  const [initCapital, setInitCapital] = useState(100000);
+  const [maxPositions, setMaxPositions] = useState(10);
+  const [rebalanceDays, setRebalanceDays] = useState(5);
+  const [factorJson, setFactorJson] = useState('');
+  const [klineStats, setKlineStats] = useState<Record<string, unknown> | null>(null);
+  const [isCheckingKline, setIsCheckingKline] = useState(false);
+  const [pfRunResult, setPfRunResult] = useState<Record<string, unknown> | null>(null);
+  const [pfRunError, setPfRunError] = useState<ParsedApiError | null>(null);
+  const [isPfRunning, setIsPfRunning] = useState(false);
+
+  const checkKlineStats = useCallback(async () => {
+    setIsCheckingKline(true);
+    try {
+      const { apiClient } = await import('../api/index');
+      const response = await apiClient.get<Record<string, unknown>>('/api/v1/backtest/kline-stats');
+      setKlineStats(response.data?.stats as Record<string, unknown> || null);
+    } catch {
+      setKlineStats(null);
+    } finally {
+      setIsCheckingKline(false);
+    }
+  }, []);
+
+  const handlePortfolioRun = useCallback(async () => {
+    setIsPfRunning(true);
+    setPfRunResult(null);
+    setPfRunError(null);
+    try {
+      const { apiClient } = await import('../api/index');
+      const params: Record<string, string | number> = {
+        initial_capital: initCapital,
+        max_positions: maxPositions,
+        rebalance_days: rebalanceDays,
+      };
+      if (dateFrom) params.start_date = dateFrom;
+      if (dateTo) params.end_date = dateTo;
+      if (factorJson.trim()) params.factor_json = factorJson.trim();
+
+      const response = await apiClient.post<Record<string, unknown>>(
+        '/api/v1/backtest/portfolio',
+        null,
+        { params },
+      );
+      setPfRunResult(response.data);
+    } catch (err: unknown) {
+      setPfRunError(getParsedApiError(err));
+    } finally {
+      setIsPfRunning(false);
+    }
+  }, [initCapital, maxPositions, rebalanceDays, dateFrom, dateTo, factorJson]);
+
   const addCode = () => {
     const trimmed = codeInput.trim().toUpperCase();
     if (trimmed && !selectedCodes.includes(trimmed)) {
@@ -447,6 +499,26 @@ const BacktestPage: React.FC = () => {
           <div className="flex items-center gap-3">
             <h1 className="text-sm font-semibold text-foreground">策略回测</h1>
             <StepIndicator current={wizardStep} completed={completedSteps} />
+            <div className="flex items-center rounded-lg bg-border/20 p-0.5 ml-2">
+              <button
+                type="button"
+                onClick={() => setBacktestMode('verify')}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all ${
+                  backtestMode === 'verify' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+                }`}
+              >
+                验证模式
+              </button>
+              <button
+                type="button"
+                onClick={() => setBacktestMode('portfolio')}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all ${
+                  backtestMode === 'portfolio' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+                }`}
+              >
+                策略回测
+              </button>
+            </div>
           </div>
           <button type="button" onClick={handleReset}
             className="btn-secondary flex items-center gap-1 text-xs">
@@ -454,7 +526,92 @@ const BacktestPage: React.FC = () => {
           </button>
         </div>
 
-        {wizardStep === 'config' && (
+        {backtestMode === 'portfolio' && (
+          <div className="space-y-3 animate-fade-in">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-text">初始资金</label>
+                <input type="number" value={initCapital} onChange={e => setInitCapital(Number(e.target.value))}
+                  min={10000} step={10000}
+                  className={`${INPUT_CLASS} w-full text-center tabular-nums`} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-text">持仓上限</label>
+                <input type="number" value={maxPositions} onChange={e => setMaxPositions(Number(e.target.value))}
+                  min={1} max={50}
+                  className={`${INPUT_CLASS} w-full text-center tabular-nums`} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-text">调仓周期(日)</label>
+                <input type="number" value={rebalanceDays} onChange={e => setRebalanceDays(Number(e.target.value))}
+                  min={1} max={60}
+                  className={`${INPUT_CLASS} w-full text-center tabular-nums`} />
+              </div>
+              <div className="flex items-end">
+                <button onClick={checkKlineStats} disabled={isCheckingKline}
+                  className="btn-secondary flex items-center gap-1 text-[10px] w-full justify-center">
+                  <Database className="h-3 w-3" />
+                  {isCheckingKline ? '检查中...' : klineStats ? `${klineStats.stock_count || '?'}只股` : '检查数据'}
+                </button>
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <div className="flex flex-col gap-1 flex-1">
+                <label className="text-[10px] text-muted-text">回测起始</label>
+                <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
+                  className={`${INPUT_CLASS} flex-1`} />
+              </div>
+              <div className="flex flex-col gap-1 flex-1">
+                <label className="text-[10px] text-muted-text">回测结束</label>
+                <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
+                  className={`${INPUT_CLASS} flex-1`} />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] text-muted-text">
+                策略因子值 (JSON, 可选)
+              </label>
+              <textarea
+                value={factorJson}
+                onChange={e => setFactorJson(e.target.value)}
+                placeholder='{"bull_trend":{"trend_score":12},"bottom_volume":{"decline_threshold":0.15}}'
+                rows={2}
+                className={`${INPUT_CLASS} resize-none font-mono text-[10px]`}
+              />
+            </div>
+            {klineStats && klineStats.ready && (
+              <div className="flex items-center gap-2 text-[10px] text-success">
+                <div className="h-1.5 w-1.5 rounded-full bg-success" />
+                K线数据就绪 · {(klineStats.total_size_mb as number)?.toFixed(0) || '?'} MB · {(klineStats.date_range_to as string) || ''}
+              </div>
+            )}
+            <div className="flex items-center gap-3 pt-1">
+              <button type="button" onClick={handlePortfolioRun} disabled={isPfRunning}
+                className="btn-primary flex items-center gap-2 text-sm px-6 py-2.5">
+                {isPfRunning ? (
+                  <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                  </svg>回测执行中...</>
+                ) : (<><Play className="h-4 w-4" />开始策略回测</>)}
+              </button>
+              <span className="text-[10px] text-muted-text">
+                基于本地K线数据和策略因子进行完整组合回测
+              </span>
+            </div>
+            {pfRunError && <ApiErrorAlert error={pfRunError} className="mt-2" />}
+            {pfRunResult && !pfRunError && (
+              <div className="rounded-xl bg-card/50 border border-border/30 p-3 grid grid-cols-4 gap-2 text-center">
+                <div><div className="text-[10px] text-muted-text">夏普</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.sharpe_ratio ?? 0).toFixed(2)}</div></div>
+                <div><div className="text-[10px] text-muted-text">总收益</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.total_return_pct ?? 0).toFixed(1)}%</div></div>
+                <div><div className="text-[10px] text-muted-text">最大回撤</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.max_drawdown_pct ?? 0).toFixed(1)}%</div></div>
+                <div><div className="text-[10px] text-muted-text">耗时</div><div className="text-xs font-mono text-foreground">{pfRunResult.elapsed_seconds as number}s</div></div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {backtestMode === 'verify' && wizardStep === 'config' && (
           <div className="space-y-3 animate-fade-in">
             <div>
               <label className="text-xs text-muted-text mb-1 block">
