@@ -38,7 +38,24 @@ logger = logging.getLogger("kline_import")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_ROOT / "data" / "kline"
 DAILY_DIR = DATA_DIR / "daily"
-CSV_BASE = Path(r"D:\BaiduNetdiskDownload\stock6\每天一个文件\前复权")
+
+def _find_csv_base() -> Tuple[Path, str]:
+    candidates = [
+        (PROJECT_ROOT / "data" / "sources" / "kline_source", "project sources/"),
+        (Path(r"D:\BaiduNetdiskDownload\stock6\每天一个文件\前复权"), "BaiduNetdisk download/"),
+    ]
+    for path, desc in candidates:
+        if path.exists() and path.is_dir():
+            for year in ["2020", "2021", "2022"]:
+                if (path / year).exists() or (path / "2000至2025" / year).exists():
+                    return path, desc
+    raise FileNotFoundError(
+        "CSV source not found. Download kline_2020_2026.zip and extract to "
+        "data/sources/kline_source/, or place raw CSVs at\n"
+        "  {}".format(candidates[1][0])
+    )
+
+CSV_BASE, CSV_BASE_DESC = _find_csv_base()
 ORIGIN_DATE = date(2000, 1, 1)
 YEAR_MIN, YEAR_MAX = 2020, 2026
 
@@ -311,6 +328,7 @@ if __name__ == "__main__":
         else list(range(YEAR_MIN, YEAR_MAX + 1))
 
     t0 = time.time()
+    logger.info("CSV source: %s (%s)", CSV_BASE, CSV_BASE_DESC)
     logger.info("Import years: %s", years)
 
     code_ids, meta_df, csv_files = scan_metadata(years)

@@ -57,6 +57,14 @@ reports/
 /data/kline/*
 !/data/kline/symbols.json
 !/data/kline/stock_meta.parquet
+
+# kline source data (CSVs are large, zip is for cloud drive sharing)
+/data/sources/kline_source/
+
+# market regime cache (runtime generated)
+data/market_regime_state.json
+data/stock_analysis.db-shm
+data/stock_analysis.db-wal
 *.sqlite
 *.sqlite3
 src/cache/
