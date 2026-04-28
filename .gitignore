@@ -47,19 +47,19 @@ env/
 .cursorrules
 
 # 数据和日志
-:/data/*
+/data/*
 logs/
 reports/
 *.db
 
-# kline metadata only (tiny < 100 KB, need by KlineRepo; 477 MB daily/ is gitignored)
+# kline metadata only (tiny < 100 KB, needed by KlineRepo; 477 MB daily/ gitignored)
 !/data/kline/
 /data/kline/*
 !/data/kline/symbols.json
 !/data/kline/stock_meta.parquet
 
-# kline source data (CSVs are large, zip is for cloud drive sharing)
-/data/sources/kline_source/
+# kline source data (882 MB zip + CSVs — cloud drive sharing only)
+/data/sources/
 
 # market regime cache (runtime generated)
 data/market_regime_state.json
