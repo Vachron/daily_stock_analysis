@@ -252,3 +252,89 @@ def get_equity_curve(
             status_code=500,
             detail={"error": "internal_error", "message": f"查询资金曲线失败: {str(exc)}"},
         )
+
+
+@router.get(
+    "/kline-stats",
+    summary="获取K线数据库统计",
+    description="返回本地K线Parquet数据库的导入状态和数据统计",
+)
+def get_kline_stats():
+    try:
+        from data_provider.kline_repo import KlineRepo
+        repo = KlineRepo()
+        return {"status": "ok", "stats": repo.get_statistics()}
+    except Exception as exc:
+        logger.error(f"K线统计失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(exc)},
+        )
+
+
+@router.post(
+    "/portfolio",
+    summary="运行策略因子回测",
+    description="基于用户设定的参数和因子值，对历史全市场数据进行组合回测",
+)
+def run_portfolio_backtest(
+    initial_capital: float = Query(100000, ge=10000, description="初始资金"),
+    start_date: Optional[str] = Query(None, description="回测起始日期 YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="回测结束日期 YYYY-MM-DD"),
+    max_positions: int = Query(10, ge=1, le=50, description="最大持仓数"),
+    rebalance_days: int = Query(5, ge=1, le=60, description="调仓周期(交易日)"),
+    factor_json: Optional[str] = Query(None, description="因子值 JSON 字符串"),
+):
+    import json as _json
+    from datetime import date as _date
+
+    try:
+        from src.core.portfolio_backtest_engine import PortfolioBacktestEngine, BacktestParams
+
+        engine = PortfolioBacktestEngine()
+        if not engine.ready:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": "data_not_ready", "message": "K-line data not imported yet. Run import_kline.py first."},
+            )
+
+        params = BacktestParams(
+            initial_capital=initial_capital,
+            start_date=_date.fromisoformat(start_date) if start_date else None,
+            end_date=_date.fromisoformat(end_date) if end_date else None,
+            max_positions=max_positions,
+            rebalance_freq_days=rebalance_days,
+        )
+
+        if factor_json:
+            params.factor_values = _json.loads(factor_json)
+
+        result = engine.run(params)
+
+        nav_json = None
+        if result.nav_df is not None and not result.nav_df.empty:
+            nav_records = result.nav_df.to_dict(orient="records")
+            nav_json = [
+                {k: (v.isoformat() if hasattr(v, 'isoformat') else (float(v) if isinstance(v, (np.floating, float)) else v))
+                 for k, v in r.items()}
+                for r in nav_records[-50:]
+            ]
+
+        return {
+            "status": "ok",
+            "run_id": result.run_id,
+            "success": result.success,
+            "error": result.error,
+            "metrics": result.metrics,
+            "trades": result.trades[-100:],
+            "nav": nav_json,
+            "elapsed_seconds": result.elapsed_seconds,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"组合回测失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(exc)},
+        )

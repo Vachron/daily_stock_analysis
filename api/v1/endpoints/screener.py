@@ -986,3 +986,120 @@ async def screener_stream():
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.get(
+    "/weights/interpretation",
+    summary="获取策略权重解读",
+    description="返回当前生效权重的LLM解读，解释每个策略权重变化的原因",
+)
+def get_weight_interpretation():
+    try:
+        from src.core.strategy_optimizer import StrategyOptimizer
+        from src.core.market_regime import MarketRegimeDetector
+        from src.services.weight_interpretation_service import WeightInterpretationService
+
+        optimizer = StrategyOptimizer()
+        details = optimizer.get_optimization_details()
+        changes = details.get("changes", [])
+
+        regime_detector = MarketRegimeDetector()
+        regime_result = regime_detector.detect()
+        market_regime = regime_result.label if regime_result else "unknown"
+
+        interpretation_service = WeightInterpretationService()
+        interpretations = interpretation_service.generate(
+            changes=changes,
+            market_regime=market_regime,
+        )
+
+        return {
+            "status": "ok",
+            "last_optimization_date": details.get("last_optimization_date", ""),
+            "optimization_count": details.get("optimization_count", 0),
+            "total_strategies": details.get("total_strategies", 0),
+            "modified_strategies": details.get("modified_strategies", 0),
+            "market_regime": market_regime,
+            "weights_before": details.get("weights_before", {}),
+            "weights_after": details.get("weights_after", {}),
+            "interpretations": interpretations,
+        }
+    except Exception as exc:
+        logger.error(f"权重解读失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"权重解读失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/picks/{code}/score-breakdown",
+    summary="获取股票得分拆解",
+    description="返回单只股票的全部26个策略得分明细、基础评分组件、分组汇总",
+)
+def get_score_breakdown(
+    code: str,
+    screen_date: Optional[str] = Query(None, description="选股日期 (YYYY-MM-DD)，默认最新"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    try:
+        service = ScreenerService(db_manager)
+
+        target_date = date.fromisoformat(screen_date) if screen_date else None
+        picks = service.get_picks_by_date(target_date) if target_date else service.get_today_picks()
+
+        candidates = picks.get("picks", [])
+        target = None
+        for c in candidates:
+            if c.get("code") == code:
+                target = c
+                break
+
+        if target is None:
+            raise HTTPException(status_code=404, detail={"error": "not_found", "message": f"Stock {code} not in picks"})
+
+        strategy_scores = target.get("strategy_scores", {})
+        base_score = target.get("base_factor_score", 0)
+        fusion_score = target.get("fusion_score", 0)
+        signals = target.get("signals", {})
+
+        breakdown = {
+            "code": code,
+            "name": target.get("name", ""),
+            "score": target.get("score", 0),
+            "price": target.get("price_at_screen", 0),
+            "market_cap": target.get("market_cap", 0),
+            "turnover_rate": target.get("turnover_rate", 0),
+            "pe_ratio": target.get("pe_ratio"),
+            "quality_tier": target.get("quality_tier", ""),
+
+            "base_score": {
+                "total": round(base_score, 1),
+                "max": 85,
+                "components": {
+                    "turnover": {"score": signals.get("turnover_signal", ""), "raw": 0},
+                    "momentum": {"score": signals.get("momentum_signal", ""), "raw": 0},
+                    "valuation": {"score": signals.get("pe_signal", ""), "raw": 0},
+                    "market_cap": {"score": signals.get("cap_signal", ""), "raw": 0},
+                },
+            },
+
+            "strategy_breakdown": {
+                "fusion_score": fusion_score,
+                "strategy_avg": strategy_scores.get("strategy_avg", 0),
+                "regime": strategy_scores.get("regime", ""),
+                "regime_label": strategy_scores.get("regime_label", ""),
+                "category_breakdown": strategy_scores.get("category_breakdown", {}),
+                "triggered_strategies": strategy_scores.get("triggered_strategies", []),
+            },
+        }
+
+        return {"status": "ok", "breakdown": breakdown}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"得分拆解失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"得分拆解失败: {str(exc)}"},
+        )
