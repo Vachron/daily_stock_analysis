@@ -70,6 +70,9 @@ local/
 run.sh
 
 verify_*.py
+!.github/scripts/verify_*.py
+!scripts/verify_all.py
+.agents/harness_state.json
 
 # ignore Claude workspace artifacts, but keep shared repo skills versioned
 .claude/*

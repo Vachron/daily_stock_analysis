@@ -1,0 +1,64 @@
+{
+  "last_result": {
+    "stage": "development",
+    "timestamp": "2026-04-28T12:10:53.270598",
+    "summary": {
+      "total": 6,
+      "passed": 1,
+      "warned": 3,
+      "failed": 2,
+      "score": "1/6"
+    },
+    "checks": [
+      {
+        "id": "A.1",
+        "category": "代码质量",
+        "name": "Python 语法检查",
+        "result": "PASS",
+        "details": "所有 Python 文件语法正确",
+        "fix": ""
+      },
+      {
+        "id": "A.2",
+        "category": "安全",
+        "name": "硬编码密钥检测",
+        "result": "FAIL",
+        "details": "发现 4 处可能的硬编码密钥",
+        "fix": "使用 os.getenv() 读取环境变量"
+      },
+      {
+        "id": "A.3",
+        "category": "代码质量",
+        "name": "禁止模式检查",
+        "result": "WARN",
+        "details": "发现调试 print(): F:\\Stock_project\\daily_stock_analysis\\src\\analyzer.py:2196:print(\"=== AI 分析测试 ===\"); 发现调试 print(): F:\\Stock_project\\daily_stock_analysis\\src\\analyzer.py:2198:print(f\"分析结果: {result.to_dict()}\"); 发现调试 print(): F:\\Stock_project\\daily_stock_analysis\\src\\analyzer.py:2200:print(\"Gemini API 未配置，跳过测试\")",
+        "fix": "审查上述项是否合理，移除不必要的调试代码"
+      },
+      {
+        "id": "A.4",
+        "category": "代码质量",
+        "name": "类型注解完整性",
+        "result": "WARN",
+        "details": "类型注解检查建议使用 mypy，当前仅执行 py_compile",
+        "fix": "运行: mypy src/ --ignore-missing-imports"
+      },
+      {
+        "id": "B.1",
+        "category": "代码质量",
+        "name": "导入规范检查",
+        "result": "FAIL",
+        "details": "发现 1 处 star import",
+        "fix": "改为显式导入所需符号"
+      },
+      {
+        "id": "B.2",
+        "category": "代码质量",
+        "name": "网络超时检查",
+        "result": "WARN",
+        "details": "网络请求存在，请确认已设置 timeout",
+        "fix": ""
+      }
+    ]
+  },
+  "updated_at": "2026-04-28T12:10:53.270598"
+}

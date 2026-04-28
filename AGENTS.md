@@ -243,3 +243,157 @@ gh run view <run_id> --log-failed
 - 自动 tag 默认不触发，只有 commit title 包含 `#patch`、`#minor`、`#major` 才会触发版本号更新。
 - 手动打 tag 必须使用 annotated tag。
 - 用户可见变更优先通过 PR 合入，并补齐 label 与验证说明。
+
+## 10. Harness Engineering（多 Agent 协作 v2）
+
+本仓库采用 **Harness Engineering** 模式：**Humans steer. Agents execute.** — 人掌舵，Agent 干活。
+
+> 参考 OpenAI 工程师 Ryan Lopopolo 的 Harness Engineering 文章及腾讯游戏客户端团队的工程实践。
+
+### 核心思想
+
+当 Agent 搞砸时，解决办法不是"再跑一次试试"，而是退一步想：**缺了什么护栏？怎么让 Agent 看得懂、绕不过？**
+
+### 三大设计原则
+
+1. **7 层过滤网**：每个 Agent 只做一种事，互相通过文档交接 → 前面漏的后面抓到
+2. **Rules/Skills/Scripts 三层分离**：能用机器查的别靠 AI 记 → 解决长上下文注意力衰减
+3. **回退路由 + 升级**：同一阶段连续回退 3 次 → 暂停流程，向用户汇报
+
+### 目录结构
+
+```
+.agents/                          # Harness 根目录
+├── board/
+│   └── PROJECT_BOARD.md          # 项目任务看板（跨会话记忆）
+├── roles/                        # 7 Agent 角色定义
+│   ├── pm_orchestrator.md        # PM：流程总控、状态机、回退路由
+│   ├── requirement_analyst.md    # 需求分析：消歧义、验收标准、边界场景
+│   ├── solution_architect.md     # 方案设计：模块划分、API 定义、风险评估
+│   ├── gate_reviewer.md          # 闸门评估：8 维度审查（开发前最后一关）
+│   ├── developer.md              # 开发实现：按方案落地、编译自检
+│   ├── code_reviewer.md          # 代码评审：6 维度审查、需求逐条对照
+│   ├── qa_tester.md              # 测试验证：用例设计、残留检查、基线比对
+│   └── reporter.md               # 交付报告：汇总结论、归档看板
+├── rules/                        # 声明式护栏
+│   ├── safety.md                 # P0 安全护栏（最高优先级）
+│   ├── workflow.md               # P1 工作流规则（Always Apply）
+│   ├── git.md                    # P1 Git 规范
+│   ├── coding.md                 # P2 编码约束
+│   ├── model_selection.md        # P2 模型选择策略
+│   └── validation.md             # P2 自动化验证标准
+├── skills/                       # 技能包（封装可执行能力）
+│   ├── run-build-py.md
+│   ├── run-build-web.md
+│   ├── run-test.md
+│   ├── run-ci.md
+│   ├── run-verify.md             # 自动化验证执行
+│   └── check-quality.md
+├── baseline.json                 # 验证基线（指标只升不降）
+└── harness_state.json            # 协调器状态持久化
+```
+
+### 7 Agent 流水线 + 模型策略
+
+```
+[S1] 需求分析 ── Requirement Analyst (轻量) ── 消歧义 → 验收标准 → 边界场景
+  │
+[S2] 方案设计 ── Solution Architect (轻量) ── 模块划分 → 接口定义 → 风险评估
+  │
+[S3] 闸门评估 ── Gate Reviewer (轻量) ── 8 维度审查 + 文件验证
+  │  ← 阻塞则回退 S1/S2
+[S4] 开发实现 ── Developer (顶级) ── 唯一写代码的角色，编译不过禁止往下走
+  │
+[S5] 代码评审 ── Code Reviewer (中级) ── 6 维度审查 + 需求逐条对照
+  │  ← Major 问题回退 S4
+[S6] 测试验证 ── QA Tester (轻量) ── 测试用例 + 残留检查 + 基线比对
+  │  ← Blocker 回退 S4
+[S7] 交付报告 ── Reporter (轻量) ── 汇总 → 归档看板
+```
+
+### 核心规则
+
+| 规则 | 说明 |
+|------|------|
+| 发现问题的人不能自己修 | Gate Reviewer 不改需求、Code Reviewer 不改代码、QA Tester 不修 bug |
+| 闸门有阻塞 → 不许开工 | PM 拍板回退到需求分析或方案设计 |
+| 评审有 Major → 不许进测试 | PM 拍板回退到开发 |
+| 同一阶段连续回退 3 次 | 暂停流程，向用户汇报，建议重审需求 |
+| 编译不过禁止往下走 | Developer 不准带编译错误进评审 |
+
+### 协调器用法
+
+```bash
+# 查看流水线
+python scripts/harness.py pipeline
+
+# 查看所有 Agent
+python scripts/harness.py agents
+
+# 查看规则优先级
+python scripts/harness.py rules
+
+# 查看项目看板
+python scripts/harness.py board
+
+# 初始化任务
+python scripts/harness.py init "实现进度追踪UI"
+
+# 推进阶段
+python scripts/harness.py advance
+
+# 回退阶段
+python scripts/harness.py rollback --reason "评审发现 3 个 Major 问题"
+
+# 记录阶段判定
+python scripts/harness.py record --verdict "通过"
+
+# 运行验证
+python scripts/harness.py verify
+
+# 重置回退计数
+python scripts/harness.py resolve
+
+# 基线管理
+python scripts/harness.py baseline --save
+python scripts/harness.py baseline --check
+```
+
+### 任务文档结构
+
+每个任务在 `docs/features/<TaskName>/` 下生成 7 个文档：
+
+```
+docs/features/<TaskName>/
+├── 01_REQUIREMENT_ANALYSIS.md
+├── 02_SOLUTION_DESIGN.md
+├── 03_GATE_REVIEW.md
+├── 04_DEVELOPMENT.md
+├── 05_CODE_REVIEW.md
+├── 06_TEST_REPORT.md
+└── 07_DELIVERY_REPORT.md
+```
+
+### Rules/Skills/Scripts 三层分离
+
+| 层 | 作用 | 示例 | 谁执行 |
+|----|------|------|--------|
+| Rules | 告诉 Agent 需要遵守什么 | workflow.md, safety.md | Agent 记忆 |
+| Skills | 告诉 Agent 怎么操作 | run-verify.md | Agent 读取后执行 |
+| Scripts | 自动执行机器检测 | verify_all.py, ci_gate.sh | 脚本自动运行 |
+
+迁移策略：将能用模式匹配检测的规则从 Rules 迁移到 `scripts/verify_all.py`，让 Agent 只记住核心原则而非实现细节。
+
+### 验证基线
+
+- 存储在 `.agents/baseline.json`
+- 开发完成后运行 `verify_all.py` 对比基线
+- 基线退化（已知通过的检查变为失败）→ 触发告警
+- 使用 `harness.py baseline --save` 更新基线
+
+### 与 .claude/ 的关系
+
+- `.claude/` 是**单 Agent 工具**（analyze-issue、fix-issue 等）
+- `.agents/` 是**多 Agent 协作框架**（7 Agent 流水线 + 状态机 + 基线）
+- 两者互补，单 Agent 任务用 `.claude/skills/`，复杂任务用 `.agents/` 流水线
+
