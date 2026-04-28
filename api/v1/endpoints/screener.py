@@ -1091,12 +1091,12 @@ def get_score_breakdown(
             "name": target.get("name", ""),
             "score": target.get("score", 0),
             "price": target.get("price_at_screen", 0),
-            "market_cap": target.get("market_cap", 0),
-            "turnover_rate": target.get("turnover_rate", 0),
-            "pe_ratio": target.get("pe_ratio"),
-            "quality_tier": target.get("quality_tier", ""),
+            "marketCap": target.get("market_cap", 0),
+            "turnoverRate": target.get("turnover_rate", 0),
+            "peRatio": target.get("pe_ratio"),
+            "qualityTier": target.get("quality_tier", ""),
 
-            "base_score": {
+            "baseScore": {
                 "total": round(base_score, 1),
                 "max": 85,
                 "components": {
@@ -1107,13 +1107,13 @@ def get_score_breakdown(
                 },
             },
 
-            "strategy_breakdown": {
-                "fusion_score": fusion_score,
-                "strategy_avg": strategy_scores.get("strategy_avg", 0),
+            "strategyBreakdown": {
+                "fusionScore": fusion_score,
+                "strategyAvg": strategy_scores.get("strategy_avg", 0),
                 "regime": strategy_scores.get("regime", ""),
-                "regime_label": strategy_scores.get("regime_label", ""),
-                "category_breakdown": strategy_scores.get("category_breakdown", {}),
-                "triggered_strategies": strategy_scores.get("triggered_strategies", []),
+                "regimeLabel": strategy_scores.get("regime_label", ""),
+                "categoryBreakdown": strategy_scores.get("category_breakdown", {}),
+                "triggeredStrategies": strategy_scores.get("triggered_strategies", []),
             },
         }
 
