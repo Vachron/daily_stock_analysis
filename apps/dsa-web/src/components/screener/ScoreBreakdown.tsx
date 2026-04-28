@@ -1,5 +1,5 @@
 import { Loader2, ChevronUp } from 'lucide-react';
-import type { CategoryBreakdown } from '../types/screener';
+import { type CategoryBreakdown } from '../types/screener';
 
 export interface ScoreBreakdownData {
   code: string;
