@@ -2,7 +2,7 @@ import type React from 'react';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Play, RefreshCw, Target, Zap,
-  Database, Loader2, CheckCircle2, XCircle, AlertTriangle,
+  Database, Loader2, CheckCircle2, XCircle, AlertTriangle, Sliders,
 } from 'lucide-react';
 import { alphaApi } from '../api/alpha';
 import type { AlphaMetrics, AlphaHealthItem } from '../api/alpha';
@@ -11,6 +11,7 @@ import type { AlphaProgress } from '../hooks/useAlphaStream';
 import { getParsedApiError } from '../api/error';
 import type { ParsedApiError } from '../api/error';
 import { ApiErrorAlert, Card, EmptyState, StatCard } from '../components/common';
+import { AlphaFactorPanel } from '../components/alpha/AlphaFactorPanel';
 
 const formatPct = (v?: number) => (v != null ? `${v > 0 ? '+' : ''}${v.toFixed(2)}%` : '--');
 const formatIR = (v?: number) => (v != null ? v.toFixed(4) : '--');
@@ -29,6 +30,7 @@ const AlphaPage: React.FC = () => {
   const [healthSummary, setHealthSummary] = useState<{ healthy: number; aged: number; total: number } | null>(null);
   const [isLoadingHealth, setIsLoadingHealth] = useState(false);
   const [bestConfig, setBestConfig] = useState<Record<string, unknown> | null>(null);
+  const [showFactorPanel, setShowFactorPanel] = useState(false);
 
   const { isConnected: sseConnected } = useAlphaStream({
     onProgress: (p) => {
@@ -135,6 +137,11 @@ const AlphaPage: React.FC = () => {
             <RefreshCw className={`h-3.5 w-3.5 ${isLoadingHealth ? 'animate-spin' : ''}`} />
             因子健康
           </button>
+          <button type="button" onClick={() => setShowFactorPanel(true)}
+            className="btn-ghost flex items-center gap-1.5 text-xs h-8 px-2">
+            <Sliders className="h-3.5 w-3.5" />
+            因子参数
+          </button>
         </div>
 
         {runError && <ApiErrorAlert error={runError} className="mt-2" />}
@@ -224,6 +231,9 @@ const AlphaPage: React.FC = () => {
           />
         )}
       </main>
+      {showFactorPanel && (
+        <AlphaFactorPanel onClose={() => setShowFactorPanel(false)} />
+      )}
     </div>
   );
 };

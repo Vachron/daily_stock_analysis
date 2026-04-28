@@ -248,3 +248,59 @@ def get_best_alpha_config():
             return {"status": "ok", "path": files[0], "config": json.load(f)}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/factors", summary="获取策略因子参数详情")
+def get_alpha_factors():
+    try:
+        from src.alpha.factor_model import FactorModel
+        import glob as _glob, json as _json
+
+        strategies = FactorModel.load_strategies(
+            "strategies",
+            names=["bottom_volume", "bull_trend", "emotion_cycle", "momentum_reversal", "ma_golden_cross"],
+        )
+
+        factor_data = []
+        for s in strategies:
+            best_vals = {}
+            files = sorted(_glob.glob("data/optimized_strategies/alpha_best_config_*.json"), reverse=True)
+            if files:
+                try:
+                    with open(files[0], "r", encoding="utf-8") as f:
+                        best_cfg = _json.load(f)
+                    best_vals = best_cfg.get("factor_values", {}).get(s.name, {})
+                except Exception:
+                    pass
+
+            factors = []
+            for f in s.factors:
+                cur_val = best_vals.get(f.id, f.default)
+                factors.append({
+                    "id": f.id,
+                    "display_name": f.display_name,
+                    "type": f.type,
+                    "default": f.default,
+                    "current": cur_val,
+                    "range": list(f.range),
+                    "step": f.step,
+                })
+
+            factor_data.append({
+                "name": s.name,
+                "display_name": s.display_name,
+                "category": s.category,
+                "description": s.description,
+                "weight": s.weight,
+                "factors": factors,
+            })
+
+        return {
+            "status": "ok",
+            "strategies": factor_data,
+            "total_strategies": len(factor_data),
+            "total_factors": sum(len(s["factors"]) for s in factor_data),
+        }
+    except Exception as e:
+        logger.error(f"获取因子详情失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail={"error": "internal_error", "message": str(e)})

@@ -514,6 +514,29 @@ def get_tracking_status():
 
 
 @router.get(
+    "/weights",
+    summary="获取当前生效策略权重",
+    description="返回所有26个策略的基础权重和当前生效权重",
+)
+def get_strategy_weights():
+    try:
+        from src.core.strategy_optimizer import StrategyOptimizer
+        optimizer = StrategyOptimizer()
+        effective = optimizer.get_effective_weights()
+        return {
+            "status": "ok",
+            "base_weights": optimizer.base_weights,
+            "effective_weights": effective,
+        }
+    except Exception as exc:
+        logger.error(f"获取权重失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取权重失败: {str(exc)}"},
+        )
+
+
+@router.get(
     "/backtest-feedback/weights",
     summary="获取策略权重优化详情",
     description="返回回测反馈后的权重调整前后对比，每次调整的原因和变化幅度",
