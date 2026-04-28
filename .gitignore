@@ -47,10 +47,16 @@ env/
 .cursorrules
 
 # 数据和日志
-/data/
+:/data/*
 logs/
 reports/
 *.db
+
+# kline metadata only (tiny < 100 KB, need by KlineRepo; 477 MB daily/ is gitignored)
+!/data/kline/
+/data/kline/*
+!/data/kline/symbols.json
+!/data/kline/stock_meta.parquet
 *.sqlite
 *.sqlite3
 src/cache/
