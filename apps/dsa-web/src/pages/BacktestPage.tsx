@@ -461,7 +461,7 @@ const BacktestPage: React.FC = () => {
     } finally {
       setIsRunning(false);
     }
-  }, [selectedCodes, evalDays, forceRerun, loadResults]);
+  }, [selectedCodes, evalDays, forceRerun, loadResults, initialAutoRun]);
 
   useEffect(() => {
     if (initialAutoRun && selectedCodes.length > 0) {
