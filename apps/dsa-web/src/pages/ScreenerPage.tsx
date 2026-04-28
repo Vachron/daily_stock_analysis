@@ -232,7 +232,7 @@ const ScreenerPage: React.FC = () => {
 
   const [screenerProgress, setScreenerProgress] = useState<ScreenerProgress | null>(null);
 
-  const { poolProgress: ssePoolProgress } = useScreenerStream({
+  const { poolProgress: ssePoolProgress, isConnected: sseConnected } = useScreenerStream({
     onPoolProgress: (progress) => {
       if (progress.status === 'completed') {
         fetchPoolStatus();
@@ -386,6 +386,13 @@ const ScreenerPage: React.FC = () => {
   }, [poolStatus?.status]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const screenerPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const mainContentRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (isRunning) {
+      mainContentRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }, [isRunning]);
 
   const handleAskStock = useCallback((code: string, name: string) => {
     navigate(`/chat?stock=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
@@ -565,7 +572,9 @@ const ScreenerPage: React.FC = () => {
     try {
       const result = await screenerApi.run({ topN, scanMode });
       if (result.status === 'running') {
-        startStatusPolling();
+        if (!sseConnected) {
+          startStatusPolling();
+        }
       } else {
         if (result.dataFailures && result.dataFailures.length > 0) {
           setDataFailures(result.dataFailures);
@@ -581,7 +590,9 @@ const ScreenerPage: React.FC = () => {
     } catch (err) {
       const parsed = getParsedApiError(err);
       if (parsed.status === 409 || parsed.rawMessage?.includes('already_running')) {
-        startStatusPolling();
+        if (!sseConnected) {
+          startStatusPolling();
+        }
       } else {
         setRunError(parsed);
         setIsRunning(false);
@@ -1618,41 +1629,6 @@ const ScreenerPage: React.FC = () => {
           <ApiErrorAlert error={runError} className="mt-2 max-w-4xl" />
         )}
 
-        {isRunning && !screenerProgress && (
-          <div className="sticky top-0 z-30 mt-3 rounded-xl border border-white/10 bg-elevated/80 p-4 backdrop-blur-sm">
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 text-cyan animate-spin" />
-              <span className="text-sm font-medium text-foreground">选股进行中...</span>
-              <span className="text-xs text-secondary-text">等待进度数据</span>
-            </div>
-          </div>
-        )}
-
-        {isRunning && screenerProgress && screenerProgress.status === 'running' && (
-          <div className="sticky top-0 z-30 mt-3 rounded-xl border border-white/10 bg-elevated/80 p-4 backdrop-blur-sm">
-            <div className="flex items-center justify-between mb-3">
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 text-cyan animate-spin" />
-                <span className="text-sm font-medium text-foreground">选股进行中</span>
-              </div>
-              <span className="font-mono text-sm text-cyan">{screenerProgress.progressPct.toFixed(1)}%</span>
-            </div>
-            <div className="h-2 w-full rounded-full bg-white/5 mb-3">
-              <div
-                className="h-full rounded-full transition-all duration-500"
-                style={{
-                  width: Math.min(100, screenerProgress.progressPct) + '%',
-                  background: 'linear-gradient(to right, hsl(var(--primary)), hsl(var(--primary) / 0.6))',
-                }}
-              />
-            </div>
-            <div className="text-xs text-secondary-text mb-2">{screenerProgress.message}</div>
-            {screenerProgress.steps.length > 0 && (
-              <ProgressSteps steps={screenerProgress.steps} />
-            )}
-          </div>
-        )}
-
         <p className="mt-2 text-xs text-muted-text">
           从全市场A股中多因子筛选优质标的，自动跟踪观察池收益并支持回测验证
         </p>
@@ -1835,8 +1811,50 @@ const ScreenerPage: React.FC = () => {
         </div>
       </div>
 
+      <div
+        className="flex-shrink-0 px-3 pb-1"
+        style={{
+          opacity: isRunning ? 1 : 0,
+          pointerEvents: isRunning ? 'auto' : 'none',
+          transition: 'opacity 0.15s',
+        }}
+      >
+        {!screenerProgress ? (
+          <div className="rounded-lg border border-cyan/30 bg-cyan/5 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 text-cyan animate-spin" />
+              <span className="text-sm font-medium text-foreground">选股进行中...</span>
+              <span className="text-xs text-secondary-text">等待进度数据</span>
+            </div>
+          </div>
+        ) : screenerProgress.status === 'running' ? (
+          <div className="space-y-2 py-1">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 text-cyan animate-spin" />
+                <span className="text-sm font-medium text-foreground">选股进行中</span>
+              </div>
+              <span className="font-mono text-sm text-cyan">{screenerProgress.progressPct.toFixed(1)}%</span>
+            </div>
+            <div className="h-2 w-full rounded-full bg-white/5">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: Math.min(100, screenerProgress.progressPct) + '%',
+                  background: 'linear-gradient(to right, hsl(var(--primary)), hsl(var(--primary) / 0.6))',
+                }}
+              />
+            </div>
+            <div className="text-xs text-secondary-text">{screenerProgress.message}</div>
+            {screenerProgress.steps.length > 0 && (
+              <ProgressSteps steps={screenerProgress.steps} />
+            )}
+          </div>
+        ) : null}
+      </div>
+
       {/* Main content */}
-      <main className="flex-1 overflow-y-auto p-3">
+      <main ref={mainContentRef} className="flex-1 overflow-y-auto p-3">
         {pageError ? <ApiErrorAlert error={pageError} className="mb-3" /> : null}
         {activeTab === 'today' && renderTodayTab()}
         {activeTab === 'watch' && renderWatchTab()}

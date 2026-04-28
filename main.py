@@ -395,6 +395,72 @@ def parse_arguments() -> argparse.Namespace:
         help='查看选股表现统计报告'
     )
 
+    # === Alpha超额收益系统 ===
+    parser.add_argument(
+        '--alpha-debug',
+        action='store_true',
+        help='启动Alpha超额收益调试（因子参数化 → 截面打分 → 组合模拟 → 超额评估）'
+    )
+    parser.add_argument(
+        '--alpha-from',
+        type=str,
+        default=None,
+        help='Alpha回测起始日期 (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--alpha-to',
+        type=str,
+        default=None,
+        help='Alpha回测结束日期 (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--alpha-strategies',
+        type=str,
+        default=None,
+        help='Alpha策略名称列表，逗号分隔（默认5个参数化策略）'
+    )
+    parser.add_argument(
+        '--alpha-benchmark',
+        type=str,
+        default='000300',
+        help='Benchmark代码（默认000300/沪深300）'
+    )
+    parser.add_argument(
+        '--alpha-top-n',
+        type=int,
+        default=20,
+        help='持仓股票数（默认20）'
+    )
+
+    parser.add_argument(
+        '--alpha-auto',
+        action='store_true',
+        help='启动Alpha自动优化模式（高斯噪声搜索 + 早停）'
+    )
+    parser.add_argument(
+        '--alpha-auto-iterations',
+        type=int,
+        default=50,
+        help='自动优化最大迭代次数（默认50）'
+    )
+
+    parser.add_argument(
+        '--alpha-health',
+        action='store_true',
+        help='因子健康检查（IC监控 + 老化检测 + 轮换建议）'
+    )
+    parser.add_argument(
+        '--alpha-search',
+        action='store_true',
+        help='多策略组合搜索（贪心前向选择最优策略子集+权重）'
+    )
+    parser.add_argument(
+        '--alpha-search-max',
+        type=int,
+        default=8,
+        help='策略组合最大数量（默认8）'
+    )
+
     return parser.parse_args()
 
 
@@ -915,6 +981,101 @@ def main() -> int:
 
             watch = service.get_watch_list(days=30)
             logger.info(f"  当前观察池: {watch.get('total', 0)} 只")
+            return 0
+
+        if getattr(args, 'alpha_debug', False):
+            logger.info("模式: Alpha超额收益调试")
+            from datetime import date as _date
+            from src.alpha.cli import run_alpha_pipeline
+
+            start = _date.today() - timedelta(days=365 * 3)
+            end = _date.today()
+            if getattr(args, 'alpha_from', None):
+                start = _date.fromisoformat(args.alpha_from)
+            if getattr(args, 'alpha_to', None):
+                end = _date.fromisoformat(args.alpha_to)
+
+            strategy_names = None
+            if getattr(args, 'alpha_strategies', None):
+                strategy_names = [n.strip() for n in args.alpha_strategies.split(",")]
+
+            result = run_alpha_pipeline(
+                start_date=start,
+                end_date=end,
+                strategy_names=strategy_names,
+                benchmark_code=getattr(args, 'alpha_benchmark', '000300'),
+                top_n=getattr(args, 'alpha_top_n', 20),
+            )
+            logger.info("Alpha调试完成: IR=%.4f 超额=%.2f%%",
+                        result.get("metrics", {}).get("information_ratio", 0),
+                        result.get("metrics", {}).get("excess_return_pct", 0))
+            return 0
+
+        if getattr(args, 'alpha_auto', False):
+            logger.info("模式: Alpha自动优化")
+            from datetime import date as _date
+            from src.alpha.cli import run_alpha_auto_optimize
+
+            start = _date.today() - timedelta(days=365 * 3)
+            end = _date.today()
+            if getattr(args, 'alpha_from', None):
+                start = _date.fromisoformat(args.alpha_from)
+            if getattr(args, 'alpha_to', None):
+                end = _date.fromisoformat(args.alpha_to)
+
+            strategy_names = None
+            if getattr(args, 'alpha_strategies', None):
+                strategy_names = [n.strip() for n in args.alpha_strategies.split(",")]
+
+            result = run_alpha_auto_optimize(
+                start_date=start,
+                end_date=end,
+                strategy_names=strategy_names,
+                benchmark_code=getattr(args, 'alpha_benchmark', '000300'),
+                top_n=getattr(args, 'alpha_top_n', 20),
+                max_iterations=getattr(args, 'alpha_auto_iterations', 50),
+            )
+            logger.info("Alpha自动优化完成: 迭代%d 最优IR=%.4f 配置=%s",
+                        result.get("iterations", 0),
+                        result.get("best_ir", 0),
+                        result.get("config_path", ""))
+            return 0
+
+        if getattr(args, 'alpha_health', False):
+            logger.info("模式: Alpha因子健康检查")
+            from src.alpha.cli import run_factor_health_check
+
+            strategy_names = None
+            if getattr(args, 'alpha_strategies', None):
+                strategy_names = [n.strip() for n in args.alpha_strategies.split(",")]
+
+            result = run_factor_health_check(strategy_names=strategy_names)
+            logger.info("因子健康检查: 健康%d/老化%d/%d总",
+                        result.get("healthy", 0), result.get("aged", 0), result.get("total_factors", 0))
+            return 0
+
+        if getattr(args, 'alpha_search', False):
+            logger.info("模式: Alpha多策略组合搜索")
+            from datetime import date as _date
+            from src.alpha.cli import run_strategy_search
+
+            start = _date.today() - timedelta(days=365 * 3)
+            end = _date.today()
+            if getattr(args, 'alpha_from', None):
+                start = _date.fromisoformat(args.alpha_from)
+            if getattr(args, 'alpha_to', None):
+                end = _date.fromisoformat(args.alpha_to)
+
+            result = run_strategy_search(
+                start_date=start,
+                end_date=end,
+                benchmark_code=getattr(args, 'alpha_benchmark', '000300'),
+                top_n=getattr(args, 'alpha_top_n', 20),
+                max_strategies=getattr(args, 'alpha_search_max', 8),
+            )
+            logger.info("策略组合搜索: %d策略 IR=%.4f",
+                        len(result.get("strategies", [])),
+                        result.get("information_ratio", 0))
             return 0
 
         # 模式1: 仅大盘复盘

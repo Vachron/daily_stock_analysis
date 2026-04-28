@@ -18,6 +18,7 @@ export const backtestApi = {
     if (params.evalWindowDays) requestData.eval_window_days = params.evalWindowDays;
     if (params.minAgeDays != null) requestData.min_age_days = params.minAgeDays;
     if (params.limit) requestData.limit = params.limit;
+    if (params.autoAnalyze) requestData.auto_analyze = params.autoAnalyze;
 
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/backtest/run',

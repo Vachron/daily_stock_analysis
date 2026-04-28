@@ -107,3 +107,30 @@ instructions: |
   - 动量衰竭（涨幅放缓 + 量能萎缩）：`sentiment_score -8`
   - 反转失败（超跌后继续下跌）：`sentiment_score -10`
   - 动量与反转信号矛盾：不调整基础分，标注"方向不明"
+
+# --- Alpha 因子参数化（Harness Engineering）---
+factors:
+  - id: momentum_window
+    display_name: 动量窗口（日）
+    type: int
+    default: 20
+    range: [5, 60]
+    step: 5
+  - id: reversal_window
+    display_name: 反转窗口（日）
+    type: int
+    default: 60
+    range: [20, 120]
+    step: 10
+  - id: momentum_score
+    display_name: 动量得分
+    type: float
+    default: 10.0
+    range: [3.0, 20.0]
+    step: 1.0
+  - id: reversal_score
+    display_name: 反转得分
+    type: float
+    default: 8.0
+    range: [2.0, 18.0]
+    step: 1.0

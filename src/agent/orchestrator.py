@@ -320,7 +320,10 @@ class AgentOrchestrator:
         if history:
             ctx.meta["conversation_history"] = history
 
-        # Persist user turn
+        temporal_anchor = self._build_temporal_anchor()
+        if temporal_anchor:
+            ctx.meta["temporal_anchor"] = temporal_anchor
+
         conversation_manager.add_message(session_id, "user", message)
 
         orch_result = self._execute_pipeline(
@@ -688,6 +691,22 @@ class AgentOrchestrator:
     def _aggregate_strategy_opinions(self, ctx: AgentContext) -> None:
         """Compatibility wrapper for legacy tests/imports."""
         self._aggregate_skill_opinions(ctx)
+
+    @staticmethod
+    def _build_temporal_anchor() -> str:
+        """Build a temporal context string for the system prompt.
+
+        Informs the LLM of the current date/time so cross-session or
+        multi-turn conversations can accurately reference timing.
+        """
+        from datetime import datetime as _dt
+        now = _dt.now()
+        wd_cn = {0: "周一", 1: "周二", 2: "周三", 3: "周四", 4: "周五", 5: "周六", 6: "周日"}
+        return (
+            "[Temporal Anchor]\n"
+            "Current: %s (%s)\n"
+            "When answering, always reference relative times ('X days ago') against the date above."
+        ) % (now.strftime("%Y-%m-%d %H:%M"), wd_cn[now.weekday()])
 
     # -----------------------------------------------------------------
     # Helpers

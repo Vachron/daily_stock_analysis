@@ -138,6 +138,42 @@ class AgentMemory:
             logger.debug("[AgentMemory] get_stock_history failed: %s", exc)
             return []
 
+    def get_temporal_context(
+        self,
+        stock_code: str,
+        limit: int = 5,
+    ) -> str:
+        """Build a time-aware summary of past analyses, ALWAYS available regardless of memory.enabled."""
+        try:
+            from src.storage import get_db
+            from datetime import datetime as dt
+            db = get_db()
+            records = db.get_analysis_history(code=stock_code, limit=limit)
+            if not records:
+                return ""
+
+            now = dt.now()
+            lines = ["[History: past %d analyses for %s]" % (len(records), stock_code)]
+            for r in records:
+                created = getattr(r, "created_at", None)
+                if created:
+                    days_ago = (now - created).days
+                    time_label = "%dd ago" % days_ago if days_ago > 0 else "today"
+                else:
+                    time_label = "unknown_date"
+
+                signal = getattr(r, "operation_advice", "") or "hold"
+                score = getattr(r, "sentiment_score", 50) or 50
+                lines.append(
+                    "- %s: signal=%s, sentiment=%d"
+                    % (time_label, signal, score)
+                )
+            lines.append("(Use this as temporal reference only — do not repeat verbatim.)")
+            return "\n".join(lines)
+        except Exception as exc:
+            logger.debug("[AgentMemory] get_temporal_context failed: %s", exc)
+            return ""
+
     # -----------------------------------------------------------------
     # Confidence calibration
     # -----------------------------------------------------------------

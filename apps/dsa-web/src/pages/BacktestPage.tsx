@@ -249,16 +249,32 @@ const EquityCurveChart: React.FC<{ data: EquityCurveResponse | null; isLoading: 
   );
 };
 
-const RunResultBanner: React.FC<{ data: BacktestRunResponse }> = ({ data }) => (
-  <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-success/5 border border-success/20 animate-fade-in">
-    <span className="text-xs font-medium text-success">回测完成</span>
-    <span className="text-xs text-secondary-text">候选 <span className="font-mono text-foreground">{data.processed}</span></span>
-    <span className="text-xs text-secondary-text">写入 <span className="font-mono text-foreground">{data.saved}</span></span>
-    <span className="text-xs text-secondary-text">完成 <span className="font-mono text-success">{data.completed}</span></span>
-    <span className="text-xs text-secondary-text">数据不足 <span className="font-mono text-warning">{data.insufficient}</span></span>
-    {data.errors > 0 && <span className="text-xs text-secondary-text">错误 <span className="font-mono text-danger">{data.errors}</span></span>}
-  </div>
-);
+const RunResultBanner: React.FC<{ data: BacktestRunResponse }> = ({ data }) => {
+  const isEmpty = (data.processed ?? 0) === 0;
+
+  if (isEmpty) {
+    return (
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-warning/5 border border-warning/20 animate-fade-in">
+        <span className="text-xs font-medium text-warning">无候选记录</span>
+        <span className="text-xs text-secondary-text">
+          这些股票尚无历史分析记录，请先在「首页」中对这些股票执行一次分析后再试。
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-success/5 border border-success/20 animate-fade-in">
+      <span className="text-xs font-medium text-success">回测完成</span>
+      {(data.analyzed ?? 0) > 0 && <span className="text-xs text-secondary-text">自动分析 <span className="font-mono text-cyan">{data.analyzed}</span> 只</span>}
+      <span className="text-xs text-secondary-text">候选 <span className="font-mono text-foreground">{data.processed}</span></span>
+      <span className="text-xs text-secondary-text">写入 <span className="font-mono text-foreground">{data.saved}</span></span>
+      <span className="text-xs text-secondary-text">完成 <span className="font-mono text-success">{data.completed}</span></span>
+      <span className="text-xs text-secondary-text">数据不足 <span className="font-mono text-warning">{data.insufficient}</span></span>
+      {data.errors > 0 && <span className="text-xs text-secondary-text">错误 <span className="font-mono text-danger">{data.errors}</span></span>}
+    </div>
+  );
+};
 
 const BacktestPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -379,6 +395,7 @@ const BacktestPage: React.FC = () => {
       const response = await backtestApi.run({
         code, codes: codes && codes.length > 1 ? codes : undefined,
         force: forceRerun || undefined, minAgeDays: forceRerun ? 0 : undefined, evalWindowDays,
+        autoAnalyze: initialAutoRun || undefined,
       });
       setRunResult(response);
       setWizardStep('results');
@@ -399,7 +416,9 @@ const BacktestPage: React.FC = () => {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    loadResults();
+    if (!initialAutoRun) {
+      loadResults();
+    }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleReset = () => {
@@ -538,8 +557,12 @@ const BacktestPage: React.FC = () => {
         {wizardStep === 'running' && isRunning && (
           <div className="flex flex-col items-center gap-3 py-8 animate-fade-in">
             <div className="backtest-spinner lg" />
-            <p className="text-sm text-secondary-text">正在执行回测评估，请稍候...</p>
-            <p className="text-xs text-muted-text">系统将对比 AI 预测与实际走势，计算胜率和风险指标</p>
+            <p className="text-sm text-secondary-text">
+              {initialAutoRun ? '正在分析观察池股票并执行回测，请稍候...' : '正在执行回测评估，请稍候...'}
+            </p>
+            <p className="text-xs text-muted-text">
+              {initialAutoRun ? '系统将自动分析无历史记录的股票，然后对比AI预测与实际走势' : '系统将对比 AI 预测与实际走势，计算胜率和风险指标'}
+            </p>
           </div>
         )}
 
@@ -571,11 +594,14 @@ const BacktestPage: React.FC = () => {
               <p className="mt-2 text-secondary-text text-xs">加载回测明细...</p>
             </div>
           ) : results.length === 0 ? (
-            <EmptyState title="暂无回测结果"
-              description="点击上方「开始回测」按钮执行回测评估"
+            <EmptyState
+              title={runResult != null ? "回测无结果" : "暂无回测结果"}
+              description={runResult != null
+                ? "选中的股票尚无历史分析记录，请在首页中对这些股票执行分析后再回测"
+                : "点击上方「开始回测」按钮执行回测评估"}
               className="h-32 border-dashed"
-              icon={<BarChart3 className="h-5 w-5" />} />
-          ) : (
+              icon={<BarChart3 className="h-5 w-5" />}
+            />) : (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">

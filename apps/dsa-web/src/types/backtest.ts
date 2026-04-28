@@ -12,6 +12,7 @@ export interface BacktestRunRequest {
   evalWindowDays?: number;
   minAgeDays?: number;
   limit?: number;
+  autoAnalyze?: boolean;
 }
 
 export interface BacktestRunResponse {
@@ -20,6 +21,7 @@ export interface BacktestRunResponse {
   completed: number;
   insufficient: number;
   errors: number;
+  analyzed?: number;
 }
 
 // ============ Result Item ============

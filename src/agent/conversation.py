@@ -34,9 +34,31 @@ class ConversationSession:
         self.last_active = datetime.now()
 
     def get_history(self) -> List[Dict[str, Any]]:
-        """Get message history."""
+        """Get message history with timestamps."""
         messages = get_db().get_conversation_history(self.session_id)
         return messages
+
+    def get_temporal_context(self) -> str:
+        """Build a temporal anchor for the system prompt.
+
+        Returns a string like:
+        'Current date: 2026-04-28 14:30 CST (Tuesday)\nSession started: 2026-04-25'
+        """
+        now = datetime.now()
+        session_age = now - self.created_at
+        lines = [
+            "## Temporal Context",
+            "- **Current date/time**: %s (weekday: %s)" % (
+                now.strftime("%Y-%m-%d %H:%M"),
+                now.strftime("%A"),
+            ),
+        ]
+        if session_age > timedelta(hours=1):
+            lines.append("- **Session started**: %s (%d hours ago)" % (
+                self.created_at.strftime("%Y-%m-%d %H:%M"),
+                int(session_age.total_seconds() / 3600),
+            ))
+        return "\n".join(lines)
 
 class ConversationManager:
     """Manages multiple conversation sessions with TTL."""

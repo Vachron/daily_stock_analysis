@@ -15,6 +15,7 @@ class BacktestRunRequest(BaseModel):
     eval_window_days: Optional[int] = Field(None, ge=1, le=120, description="评估窗口（交易日数）")
     min_age_days: Optional[int] = Field(None, ge=0, le=365, description="分析记录最小天龄（0=不限）")
     limit: int = Field(200, ge=1, le=2000, description="最多处理的分析记录数")
+    auto_analyze: bool = Field(False, description="无分析记录时自动触发分析（观察池回测一键反馈）")
 
 
 class BacktestRunResponse(BaseModel):
@@ -23,6 +24,7 @@ class BacktestRunResponse(BaseModel):
     completed: int = Field(..., description="完成回测数")
     insufficient: int = Field(..., description="数据不足数")
     errors: int = Field(..., description="错误数")
+    analyzed: int = Field(0, description="自动分析触发的股票数")
 
 
 class BacktestResultItem(BaseModel):

@@ -47,3 +47,30 @@ instructions: |
   - 回踩关键均线后企稳：`sentiment_score +8`
   - 放量突破关键阻力：`sentiment_score +10`
   - 跌破 MA20 或趋势转弱：`sentiment_score -12`
+
+# --- Alpha 因子参数化（Harness Engineering）---
+factors:
+  - id: trend_score
+    display_name: 多头趋势得分
+    type: float
+    default: 12.0
+    range: [5.0, 25.0]
+    step: 1.0
+  - id: pullback_score
+    display_name: 回踩企稳得分
+    type: float
+    default: 8.0
+    range: [3.0, 20.0]
+    step: 1.0
+  - id: breakout_score
+    display_name: 突破得分
+    type: float
+    default: 10.0
+    range: [3.0, 20.0]
+    step: 1.0
+  - id: breakdown_penalty
+    display_name: 破位惩罚
+    type: float
+    default: 12.0
+    range: [5.0, 25.0]
+    step: 1.0

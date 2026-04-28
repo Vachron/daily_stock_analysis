@@ -44,3 +44,42 @@ instructions: |
   - MACD 零轴上方金叉：额外 +5
   - 在 `ma_analysis` 和 `buy_reason` 中注明"均线金叉"。
   - 理想买点设在交叉均线水平附近。
+
+# --- Alpha 因子参数化（Harness Engineering）---
+factors:
+  - id: short_window
+    display_name: 短期均线窗口
+    type: int
+    default: 5
+    range: [3, 10]
+    step: 1
+  - id: mid_window
+    display_name: 中期均线窗口
+    type: int
+    default: 20
+    range: [10, 30]
+    step: 5
+  - id: long_window
+    display_name: 长期均线窗口
+    type: int
+    default: 60
+    range: [30, 120]
+    step: 10
+  - id: golden_cross_score
+    display_name: 金叉得分
+    type: float
+    default: 12.0
+    range: [5.0, 25.0]
+    step: 1.0
+  - id: death_cross_penalty
+    display_name: 死叉惩罚
+    type: float
+    default: -10.0
+    range: [-25.0, -3.0]
+    step: 1.0
+  - id: vol_confirm_score
+    display_name: 放量确认得分
+    type: float
+    default: 5.0
+    range: [0.0, 12.0]
+    step: 1.0

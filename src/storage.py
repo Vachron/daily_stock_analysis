@@ -2083,7 +2083,14 @@ class DatabaseManager:
             messages = session.execute(stmt).scalars().all()
 
             # 倒序返回，保证时间顺序
-            return [{"role": msg.role, "content": msg.content} for msg in reversed(messages)]
+            return [
+                {
+                    "role": msg.role,
+                    "content": msg.content,
+                    "timestamp": msg.created_at.isoformat() if msg.created_at else None,
+                }
+                for msg in reversed(messages)
+            ]
 
     def conversation_session_exists(self, session_id: str) -> bool:
         """Return True when at least one message exists for the given session."""

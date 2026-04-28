@@ -155,8 +155,14 @@ class BaseAgent(ABC):
 
     def _build_messages(self, ctx: AgentContext) -> List[Dict[str, Any]]:
         """Assemble the initial messages list for the LLM."""
+        system_content = self.system_prompt(ctx)
+
+        temporal_anchor = ctx.meta.get("temporal_anchor", "")
+        if temporal_anchor:
+            system_content = temporal_anchor + "\n\n" + system_content
+
         messages: List[Dict[str, Any]] = [
-            {"role": "system", "content": self.system_prompt(ctx)},
+            {"role": "system", "content": system_content},
         ]
 
         history = ctx.meta.get("conversation_history")
@@ -167,9 +173,16 @@ class BaseAgent(ABC):
                 role = message.get("role")
                 content = message.get("content")
                 if role in {"user", "assistant", "system"} and isinstance(content, str) and content:
+                    ts = message.get("timestamp")
+                    if ts:
+                        try:
+                            from datetime import datetime as _dt
+                            dt = _dt.fromisoformat(str(ts))
+                            content = "[%s] %s" % (dt.strftime("%m-%d %H:%M"), content)
+                        except (ValueError, TypeError):
+                            pass
                     messages.append({"role": role, "content": content})
 
-        # Inject pre-fetched data as a synthetic assistant context
         cached_data = self._inject_cached_data(ctx)
         if cached_data:
             messages.append({"role": "user", "content": cached_data})
@@ -220,15 +233,28 @@ class BaseAgent(ABC):
         return filtered
 
     def _build_memory_context(self, ctx: AgentContext) -> str:
-        """Summarise recent analysis history for prompt injection."""
-        if not self.memory.enabled or not ctx.stock_code:
+        """Summarise recent analysis history for prompt injection.
+
+        Always provides temporal context (not gated by memory.enabled) so
+        the LLM can understand cross-session relationships.
+        """
+        if not ctx.stock_code:
+            return ""
+
+        temporal = self.memory.get_temporal_context(ctx.stock_code, limit=5)
+        if temporal:
+            return temporal
+
+        if not self.memory.enabled:
             return ""
 
         entries = self.memory.get_stock_history(ctx.stock_code, limit=3)
         if not entries:
             return ""
 
-        lines = ["[Memory: recent analysis history]"]
+        from datetime import datetime
+        now = datetime.now()
+        lines = ["[Memory: recent analysis history — today is %s]" % now.strftime("%Y-%m-%d")]
         for entry in entries:
             parts = [
                 entry.date or "unknown_date",

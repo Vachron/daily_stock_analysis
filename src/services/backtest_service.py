@@ -38,6 +38,7 @@ class BacktestService:
         eval_window_days: Optional[int] = None,
         min_age_days: Optional[int] = None,
         limit: int = 200,
+        auto_analyze: bool = False,
     ) -> Dict[str, Any]:
         effective_code = None
         effective_codes = codes if codes else ([code] if code else None)
@@ -71,10 +72,28 @@ class BacktestService:
             force=force,
         )
 
+        if auto_analyze and len(candidates) == 0 and effective_codes:
+            effective_code_list = effective_codes
+            codes_to_analyze = self._filter_codes_without_history(effective_code_list)
+            if codes_to_analyze:
+                logger.info("Auto-analyzing %d codes before backtest: %s", len(codes_to_analyze), codes_to_analyze[:5])
+                analyzed_count = self._analyze_codes(codes_to_analyze)
+                logger.info("Auto-analysis complete: %d/%d codes analyzed", analyzed_count, len(codes_to_analyze))
+                candidates = self.repo.get_candidates(
+                    code=effective_code,
+                    codes=effective_codes,
+                    min_age_days=0,
+                    limit=int(limit),
+                    eval_window_days=int(eval_window_days),
+                    engine_version=str(engine_version),
+                    force=True,
+                )
+
         processed = 0
         completed = 0
         insufficient = 0
         errors = 0
+        analyzed_count = 0
         touched_codes: set[str] = set()
 
         results_to_save: List[BacktestResult] = []
@@ -219,6 +238,7 @@ class BacktestService:
             "completed": completed,
             "insufficient": insufficient,
             "errors": errors,
+            "analyzed": analyzed_count,
         }
 
     def get_recent_evaluations(
@@ -392,6 +412,48 @@ class BacktestService:
         normalized = dict(summary)
         normalized["strategy_id"] = strategy_id
         return normalized
+
+    def _filter_codes_without_history(self, codes: List[str]) -> List[str]:
+        """Return subset of codes that have NO AnalysisHistory records."""
+        try:
+            from src.storage import AnalysisHistory
+
+            with self.db.get_session() as session:
+                existing = session.execute(
+                    select(AnalysisHistory.code)
+                    .where(AnalysisHistory.code.in_(codes))
+                    .distinct()
+                ).scalars().all()
+            existing_set = set(existing)
+            return [c for c in codes if c not in existing_set]
+        except Exception as exc:
+            logger.warning("Failed to check analysis history: %s", exc)
+            return codes
+
+    def _analyze_codes(self, codes: List[str]) -> int:
+        """Run analysis pipeline on each code. Returns count of successfully analyzed codes."""
+        import uuid
+        from src.services.analysis_service import AnalysisService
+
+        service = AnalysisService()
+        analyzed = 0
+        for code in codes:
+            try:
+                query_id = uuid.uuid4().hex
+                result = service.analyze_stock(
+                    stock_code=code,
+                    report_type=None,
+                    force_refresh=False,
+                    query_id=query_id,
+                    send_notification=False,
+                )
+                if result is not None:
+                    analyzed += 1
+                else:
+                    logger.warning("Auto-analysis failed for %s: %s", code, service.last_error or "unknown error")
+            except Exception as exc:
+                logger.error("Auto-analysis error for %s: %s", code, exc)
+        return analyzed
 
     def _resolve_analysis_date(self, analysis) -> Optional[date]:
         parsed = self.repo.parse_analysis_date_from_snapshot(analysis.context_snapshot)

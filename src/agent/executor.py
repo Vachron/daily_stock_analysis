@@ -17,6 +17,7 @@ same implementation.
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from src.agent.llm_adapter import LLMToolAdapter
@@ -26,6 +27,34 @@ from src.report_language import normalize_report_language
 from src.market_context import get_market_role, get_market_guidelines
 
 logger = logging.getLogger(__name__)
+
+
+def _build_temporal_header() -> str:
+    """Build a temporal anchor header injected into every system prompt.
+
+    Gives the LLM explicit awareness of current date/time so it can:
+    - Correctly interpret "yesterday", "last week", "next week"
+    - Understand which trading data is stale vs fresh
+    - Avoid hallucinating dates when asked about timing
+    """
+    now = datetime.now()
+    weekday_cn = {0: "周一", 1: "周二", 2: "周三", 3: "周四", 4: "周五", 5: "周六", 6: "周日"}
+    weekday_en = {0: "Monday", 1: "Tuesday", 2: "Wednesday", 3: "Thursday", 4: "Friday", 5: "Saturday", 6: "Sunday"}
+    wd = now.weekday()
+    is_trading_day = wd < 5
+    return (
+        "## Temporal Context\n"
+        "- **Current datetime**: {dt} ({cn} / {en})\n"
+        "- **Trading day**: {is_trade}\n"
+        "- When the user says 'today', 'yesterday', or 'this week', resolve relative to the date above.\n"
+        "- When referencing stock data, always note the data timestamp vs the current date.\n"
+        "- Do NOT invent dates; if you don't know when something happened, say so explicitly.\n"
+    ).format(
+        dt=now.strftime("%Y-%m-%d %H:%M"),
+        cn=weekday_cn[wd],
+        en=weekday_en[wd],
+        is_trade="Yes" if is_trading_day else "No (weekend/holiday — trade dates may be stale)",
+    )
 
 
 # ============================================================
@@ -485,6 +514,7 @@ class AgentExecutor:
             skills_section=skills_section,
             language_section=_build_language_section(report_language),
         )
+        system_prompt = _build_temporal_header() + "\n\n" + system_prompt
 
         # Build tool declarations in OpenAI format (litellm handles all providers)
         tool_decls = self.tool_registry.to_openai_tools()
@@ -534,19 +564,33 @@ class AgentExecutor:
             skills_section=skills_section,
             language_section=_build_language_section(report_language, chat_mode=True),
         )
+        system_prompt = _build_temporal_header() + "\n\n" + system_prompt
 
-        # Build tool declarations in OpenAI format (litellm handles all providers)
+        session = conversation_manager.get_or_create(session_id)
+        system_prompt += "\n\n" + session.get_temporal_context()
+
         tool_decls = self.tool_registry.to_openai_tools()
 
-        # Get conversation history
-        session = conversation_manager.get_or_create(session_id)
         history = session.get_history()
 
-        # Initialize conversation
         messages: List[Dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
         ]
-        messages.extend(history)
+        for h in history:
+            role = h.get("role", "")
+            content = h.get("content", "")
+            ts = h.get("timestamp")
+            if ts:
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    label = "[%s]" % dt.strftime("%m-%d %H:%M")
+                except (ValueError, TypeError):
+                    label = ""
+            else:
+                label = ""
+            if label:
+                content = "%s %s" % (label, content)
+            messages.append({"role": role, "content": content})
 
         # Inject previous analysis context if provided (data reuse from report follow-up)
         if context:

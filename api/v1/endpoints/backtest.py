@@ -64,6 +64,7 @@ def run_backtest(
             eval_window_days=request.eval_window_days,
             min_age_days=request.min_age_days,
             limit=request.limit,
+            auto_analyze=request.auto_analyze,
         )
         return BacktestRunResponse(**stats)
     except Exception as exc:
