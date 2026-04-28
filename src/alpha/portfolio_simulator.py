@@ -230,6 +230,8 @@ class PortfolioSimulator:
                 cost = shares_to_sell * px * (1 - self.config.commission_rate - self.config.slippage_pct)
                 cash += cost
                 positions[code] = positions.get(code, 0) - shares_to_sell
+                if positions[code] <= 0:
+                    del positions[code]
                 self.trades.append(TradeRecord(
                     date=day, code=code, action="sell",
                     shares=shares_to_sell, price=px, cost=cost, reason="rebalance_reduce",
@@ -265,12 +267,29 @@ class PortfolioSimulator:
         return float(row["close"].iloc[-1])
 
     def _merge_benchmark(self, benchmark_nav: pd.Series) -> None:
-        if self.nav_history.empty:
+        if self.nav_history.empty or benchmark_nav is None or benchmark_nav.empty:
             return
-        bench_aligned = benchmark_nav.reindex(self.nav_history.index, method="ffill")
-        if bench_aligned.iloc[0] != 0:
-            self.nav_history["benchmark_nav"] = bench_aligned.values
-            self.nav_history["excess_return"] = (
-                self.nav_history["nav"] / self.nav_history["nav"].iloc[0]
-                - self.nav_history["benchmark_nav"] / self.nav_history["benchmark_nav"].iloc[0]
-            )
+        try:
+            if "date" in self.nav_history.columns:
+                nav_dates = pd.to_datetime(self.nav_history["date"])
+                aligned = []
+                prev_val = benchmark_nav.iloc[0]
+                for nd in nav_dates:
+                    if nd in benchmark_nav.index:
+                        prev_val = benchmark_nav.loc[nd]
+                    aligned.append(prev_val)
+                bench_vals = np.array(aligned, dtype=float)
+            else:
+                bench_aligned = benchmark_nav.reindex(
+                    pd.to_datetime(self.nav_history.index), method="ffill"
+                )
+                bench_vals = bench_aligned.values
+
+            if len(bench_vals) > 1 and bench_vals[0] > 0:
+                self.nav_history["benchmark_nav"] = bench_vals
+                self.nav_history["excess_return"] = (
+                    self.nav_history["nav"] / self.nav_history["nav"].iloc[0]
+                    - self.nav_history["benchmark_nav"] / self.nav_history["benchmark_nav"].iloc[0]
+                )
+        except Exception as e:
+            logger.warning("Benchmark merge failed: %s", e)

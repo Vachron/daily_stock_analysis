@@ -100,7 +100,7 @@ def get_history_list(
         items = [
             HistoryItem(
                 id=item.get("id"),
-                query_id=item.get("query_id", ""),
+                query_id=item.get("query_id") or "",
                 stock_code=item.get("stock_code", ""),
                 stock_name=item.get("stock_name"),
                 report_type=item.get("report_type"),

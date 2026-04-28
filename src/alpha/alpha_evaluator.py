@@ -136,13 +136,54 @@ class AlphaEvaluator:
         fr = forward_returns.loc[common_idx]
 
         from scipy.stats import spearmanr
-        rank_ic, _ = spearmanr(fv, fr)
 
-        ic_mean = rank_ic
-        ic_std = 0.0
-        ic_series = [rank_ic]
+        has_date_index = False
+        per_period_ics: List[float] = []
 
-        ic_ir = ic_mean / (ic_std + 1e-10)
+        if isinstance(fv.index, pd.DatetimeIndex) or (
+            hasattr(fv.index, 'dtype') and 'datetime' in str(fv.index.dtype)
+        ):
+            has_date_index = True
+        elif fv.index.dtype == object:
+            try:
+                dates = pd.to_datetime(fv.index)
+                unique_dates = sorted(set(dates.date))
+                if len(unique_dates) > 1:
+                    has_date_index = True
+            except Exception:
+                pass
+
+        if has_date_index:
+            dates = pd.to_datetime(fv.index)
+            for dt in sorted(set(dates.date)):
+                mask = dates.date == dt
+                fv_d = fv[mask]
+                fr_d = fr[fr.index.isin(fv_d.index)]
+                common = fv_d.index.intersection(fr_d.index)
+                if len(common) < 10:
+                    continue
+                ic, _ = spearmanr(fv_d.loc[common], fr_d.loc[common])
+                if not np.isnan(ic):
+                    per_period_ics.append(float(ic))
+
+            if len(per_period_ics) >= 2:
+                ic_mean = float(np.mean(per_period_ics))
+                ic_std = float(np.std(per_period_ics, ddof=1))
+                ic_ir = ic_mean / ic_std if ic_std > 0 else 0.0
+                ic_series = per_period_ics
+                rank_ic = ic_mean
+            else:
+                rank_ic, _ = spearmanr(fv, fr)
+                ic_mean = rank_ic
+                ic_std = 0.0
+                ic_ir = 0.0
+                ic_series = [rank_ic]
+        else:
+            rank_ic, _ = spearmanr(fv, fr)
+            ic_mean = rank_ic
+            ic_std = 0.0
+            ic_ir = 0.0
+            ic_series = [rank_ic]
 
         is_aged = abs(rank_ic) < aged_threshold
         aged_reason = "IC 低于阈值 %.3f" % aged_threshold if is_aged else ""

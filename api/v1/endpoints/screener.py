@@ -513,6 +513,25 @@ def get_tracking_status():
         return {"status": "idle", "result": _tracking_result}
 
 
+@router.get(
+    "/backtest-feedback/weights",
+    summary="获取策略权重优化详情",
+    description="返回回测反馈后的权重调整前后对比，每次调整的原因和变化幅度",
+)
+def get_optimization_weights():
+    try:
+        from src.core.strategy_optimizer import StrategyOptimizer
+        optimizer = StrategyOptimizer()
+        details = optimizer.get_optimization_details()
+        return {"status": "ok", **details}
+    except Exception as exc:
+        logger.error(f"获取权重优化详情失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"获取权重优化详情失败: {str(exc)}"},
+        )
+
+
 @router.post(
     "/backtest-feedback",
     response_model=ScreenerBacktestFeedbackResponse,
@@ -530,6 +549,16 @@ def apply_backtest_feedback(
     try:
         service = ScreenerService(db_manager)
         result = service.apply_backtest_feedback(strategy_tag=strategy_tag)
+
+        try:
+            from src.core.strategy_optimizer import StrategyOptimizer
+            optimizer = StrategyOptimizer()
+            opt_details = optimizer.get_optimization_details()
+            result["optimization"] = opt_details
+        except Exception as opt_err:
+            logger.warning("加载权重优化详情失败: %s", opt_err)
+            result["optimization"] = None
+
         return ScreenerBacktestFeedbackResponse(**result)
     except Exception as exc:
         logger.error(f"回测反馈失败: {exc}", exc_info=True)

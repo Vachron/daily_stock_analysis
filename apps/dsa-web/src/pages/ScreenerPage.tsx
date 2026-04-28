@@ -79,21 +79,31 @@ function StrategyScoreBar({ breakdown }: { breakdown: Record<string, CategoryBre
   const entries = Object.entries(breakdown).filter(([, v]) => v.avgScore > 0);
   if (entries.length === 0) return null;
 
+  const tiers: Array<{ min: number; color: string; opacity: number }> = [
+    { min: 70, color: '#34d399', opacity: 0.7 },
+    { min: 50, color: '#22d3ee', opacity: 0.6 },
+    { min: 30, color: '#fbbf24', opacity: 0.7 },
+    { min: 0, color: '#f87171', opacity: 0.6 },
+  ];
+
   return (
     <div className="space-y-1.5">
       {entries.map(([key, val]) => {
         const pctVal = Math.min(100, Math.max(0, val.avgScore));
-        const barColor =
-          pctVal >= 70 ? '#34d399' : pctVal >= 50 ? 'hsl(var(--primary))' : pctVal >= 30 ? '#fbbf24' : '#f87171';
+        const tier = tiers.find(t => pctVal >= t.min) || tiers[tiers.length - 1];
         return (
           <div key={key} className="flex items-center gap-2 text-[11px]">
             <span className="w-10 shrink-0 text-right text-secondary-text">
               {CATEGORY_LABELS[key] || key}
             </span>
-            <div className="flex-1 h-2 rounded-full bg-border/30 overflow-hidden">
+            <div className="flex-1 h-2 rounded-full bg-border/20 overflow-hidden">
               <div
                 className="h-full rounded-full transition-all duration-500"
-                style={{ width: `${pctVal}%`, background: barColor }}
+                style={{
+                  width: `${pctVal}%`,
+                  backgroundColor: tier.color,
+                  opacity: tier.opacity,
+                }}
               />
             </div>
             <span className="w-8 shrink-0 font-mono tabular-nums text-secondary-text">
@@ -209,6 +219,7 @@ const ScreenerPage: React.FC = () => {
   const [insightMap, setInsightMap] = useState<Record<string, ScreenerInsightItem>>({});
   const [isLoadingInsights, setIsLoadingInsights] = useState(false);
   const [isGeneratingInsights, setIsGeneratingInsights] = useState(false);
+  const [insightsRequested, setInsightsRequested] = useState(false);
   const [expandedInsight, setExpandedInsight] = useState<Set<string>>(new Set());
   const [expandedStrategy, setExpandedStrategy] = useState<Set<string>>(new Set());
 
@@ -480,6 +491,7 @@ const ScreenerPage: React.FC = () => {
 
   const handleGenerateInsights = useCallback(async () => {
     setIsGeneratingInsights(true);
+    setInsightsRequested(true);
     try {
       await screenerApi.generateInsights();
       let retries = 0;
@@ -882,7 +894,7 @@ const ScreenerPage: React.FC = () => {
                           <MessageSquare className="h-3.5 w-3.5" />
                           问股
                         </button>
-                        {insightMap[item.code] && (
+                        {insightMap[item.code] ? (
                           <button
                             type="button"
                             onClick={() => toggleInsight(item.code)}
@@ -892,7 +904,12 @@ const ScreenerPage: React.FC = () => {
                             <Sparkles className="h-3.5 w-3.5" />
                             {expandedInsight.has(item.code) ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
                           </button>
-                        )}
+                        ) : insightsRequested ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-muted-text">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                            生成中
+                          </span>
+                        ) : null}
                       </div>
                     </td>
                   </tr>
@@ -903,7 +920,7 @@ const ScreenerPage: React.FC = () => {
                           <div className="flex items-center gap-3 mb-2">
                             <span className="text-xs font-medium text-cyan">策略得分分布</span>
                             <span className="text-xs text-secondary-text">
-                              综合 {ss.fusionScore.toFixed(1)} · 策略均值 {ss.strategyAvg.toFixed(1)} · 基本面 {ss.baseFactorScore.toFixed(0)}
+                              综合 {ss.fusionScore.toFixed(1)} · 策略均值 {ss.strategyAvg.toFixed(1)} · 基础评分 {ss.baseFactorScore.toFixed(0)}
                             </span>
                             {ss.regimeLabel && (
                               <span className="text-xs text-muted-text">· {ss.regimeLabel}</span>
@@ -1663,7 +1680,7 @@ const ScreenerPage: React.FC = () => {
                     className="h-full rounded-full transition-all duration-500"
                     style={{
                       width: Math.min(100, ssePoolProgress?.progressPct ?? poolStatus.progressPct) + '%',
-                      background: 'linear-gradient(to right, hsl(var(--primary)), hsl(var(--primary) / 0.6))',
+  background: 'linear-gradient(to right, hsl(var(--primary) / 0.3), hsl(var(--primary) / 0.65))',
                     }}
                   />
                 </div>
@@ -1841,7 +1858,7 @@ const ScreenerPage: React.FC = () => {
                 className="h-full rounded-full transition-all duration-500"
                 style={{
                   width: Math.min(100, screenerProgress.progressPct) + '%',
-                  background: 'linear-gradient(to right, hsl(var(--primary)), hsl(var(--primary) / 0.6))',
+                  background: 'linear-gradient(to right, hsl(var(--primary) / 0.3), hsl(var(--primary) / 0.65))',
                 }}
               />
             </div>

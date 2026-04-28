@@ -118,6 +118,42 @@ class StrategyOptimizer:
             return dict(self.state.strategy_weights)
         return dict(self.base_weights)
 
+    def get_optimization_details(self) -> Dict[str, Any]:
+        before = dict(self.base_weights)
+        after = dict(self.base_weights)
+        modified = self.state.strategy_weights
+        if modified:
+            after.update(modified)
+
+        changes = []
+        for name, base_w in before.items():
+            opt_w = after.get(name, base_w)
+            if abs(opt_w - base_w) > 0.001:
+                direction = "up" if opt_w > base_w else "down"
+                change_pct = round((opt_w - base_w) / base_w * 100, 1) if base_w > 0 else 0
+                changes.append({
+                    "strategy": name,
+                    "original_weight": round(base_w, 3),
+                    "optimized_weight": round(opt_w, 3),
+                    "change_pct": change_pct,
+                    "direction": direction,
+                })
+
+        changes.sort(key=lambda x: abs(x["change_pct"]), reverse=True)
+        total_param = len(before)
+        changed_count = len(changes)
+
+        return {
+            "last_optimization_date": self.state.last_optimization_date,
+            "optimization_count": self.state.optimization_count,
+            "total_strategies": total_param,
+            "modified_strategies": changed_count,
+            "weights_before": {k: round(v, 3) for k, v in before.items()},
+            "weights_after": {k: round(v, 3) for k, v in after.items()},
+            "changes": changes,
+            "history": self.state.optimization_history[-10:],
+        }
+
     def optimize_from_backtest(
         self,
         backtest_records: List[Dict[str, Any]],

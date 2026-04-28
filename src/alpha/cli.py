@@ -86,6 +86,7 @@ def run_alpha_pipeline(
 
     alphas_by_date: Dict[date, List[AlphaPrediction]] = {}
     total_dates = len(trade_dates)
+    logger.info("Starting cross-section scoring: %d trading days, ~%d stocks", total_dates, len(pool_codes))
     for i, td in enumerate(trade_dates):
         if progress_callback and i % 10 == 0:
             pct = 15 + (i / total_dates) * 55

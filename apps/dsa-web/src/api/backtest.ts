@@ -23,6 +23,7 @@ export const backtestApi = {
     const response = await apiClient.post<Record<string, unknown>>(
       '/api/v1/backtest/run',
       requestData,
+      { timeout: params.autoAnalyze ? 600000 : 120000 },
     );
     return toCamelCase<BacktestRunResponse>(response.data);
   },

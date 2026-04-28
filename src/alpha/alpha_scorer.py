@@ -328,20 +328,37 @@ class AlphaScorer:
 
 
 def make_default_history_provider():
-    from data_provider.base import get_provider
+    from data_provider.base import DataFetcherManager
 
-    provider = get_provider()
+    manager = DataFetcherManager()
+    _cache: Dict[str, Optional[pd.DataFrame]] = {}
 
     def _fetch(code: str, target_date: date) -> Optional[pd.DataFrame]:
+        cache_key = code
+        if cache_key in _cache:
+            cached = _cache[cache_key]
+            if cached is None or cached.empty:
+                return None
+            if "date" in cached.columns:
+                cached_dates = pd.to_datetime(cached["date"]).dt.date
+                cut = cached[pd.to_datetime(cached["date"]).dt.date <= target_date]
+                if not cut.empty:
+                    return cut
+            return cached
+
         try:
             start = target_date - timedelta(days=180)
-            df = provider.get_daily_history(
-                code=code,
+            df, _source = manager.get_daily_data(
+                stock_code=code,
                 start_date=start.strftime("%Y-%m-%d"),
                 end_date=target_date.strftime("%Y-%m-%d"),
+                days=180,
+                adjust="qfq",
             )
+            _cache[cache_key] = df
             return df
         except Exception:
+            _cache[cache_key] = None
             return None
 
     return _fetch

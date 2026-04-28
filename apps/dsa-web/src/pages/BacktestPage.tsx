@@ -380,7 +380,9 @@ const BacktestPage: React.FC = () => {
   }, [selectedCodes, evalDays, dateFrom, dateTo]);
 
   const loadResults = useCallback(async () => {
-    await Promise.all([fetchResults(1), fetchPerformance(), fetchEquityCurve()]);
+    await fetchResults(1);
+    await fetchPerformance();
+    await fetchEquityCurve();
   }, [fetchResults, fetchPerformance, fetchEquityCurve]);
 
   const handleRun = useCallback(async () => {
@@ -574,34 +576,38 @@ const BacktestPage: React.FC = () => {
         <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4 animate-fade-in">
           {pageError && <ApiErrorAlert error={pageError} className="mb-2" />}
 
-          {isLoadingPerf ? (
-            <div className="flex items-center justify-center py-6"><div className="backtest-spinner sm" /></div>
-          ) : overallPerf ? (
-            <PerformancePanel metrics={overallPerf} title="整体表现" />
-          ) : (
-            <EmptyState title="暂无绩效数据"
-              description="执行回测后将在此展示整体绩效指标"
-              className="h-24 border-dashed bg-card/45 shadow-none" />
-          )}
-
-          <Card variant="gradient" padding="sm">
-            <EquityCurveChart data={equityCurve} isLoading={isLoadingCurve} />
-          </Card>
-
-          {isLoadingResults ? (
-            <div className="flex flex-col items-center justify-center py-8">
-              <div className="backtest-spinner md" />
-              <p className="mt-2 text-secondary-text text-xs">加载回测明细...</p>
+          {(isLoadingPerf || isLoadingCurve || isLoadingResults) ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <div className="backtest-spinner lg" />
+              <p className="mt-3 text-secondary-text text-sm">正在加载回测数据...</p>
+              <p className="mt-1 text-xs text-muted-text">
+                {isLoadingPerf ? '绩效指标加载中' : isLoadingCurve ? '资金曲线加载中' : '回测明细加载中'}
+              </p>
             </div>
-          ) : results.length === 0 ? (
-            <EmptyState
-              title={runResult != null ? "回测无结果" : "暂无回测结果"}
-              description={runResult != null
-                ? "选中的股票尚无历史分析记录，请在首页中对这些股票执行分析后再回测"
-                : "点击上方「开始回测」按钮执行回测评估"}
-              className="h-32 border-dashed"
-              icon={<BarChart3 className="h-5 w-5" />}
-            />) : (
+          ) : (
+            <>
+              {overallPerf ? (
+                <PerformancePanel metrics={overallPerf} title="整体表现" />
+              ) : (
+                <EmptyState title="暂无绩效数据"
+                  description="执行回测后将在此展示整体绩效指标"
+                  className="h-24 border-dashed bg-card/45 shadow-none" />
+              )}
+
+              <Card variant="gradient" padding="sm">
+                <EquityCurveChart data={equityCurve} isLoading={false} />
+              </Card>
+
+              {results.length === 0 ? (
+                <EmptyState
+                  title={runResult != null ? "回测无结果" : "暂无回测结果"}
+                  description={runResult != null
+                    ? "选中的股票尚无历史分析记录，请在首页中对这些股票执行分析后再回测"
+                    : "点击上方「开始回测」按钮执行回测评估"}
+                  className="h-32 border-dashed"
+                  icon={<BarChart3 className="h-5 w-5" />}
+                />
+              ) : (
             <div>
               <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
@@ -683,6 +689,8 @@ const BacktestPage: React.FC = () => {
                 共 {totalResults} 条 · 第 {currentPage} / {Math.max(totalPages, 1)} 页
               </p>
             </div>
+          )}
+            </>
           )}
         </main>
       )}

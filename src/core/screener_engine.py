@@ -558,6 +558,7 @@ class ScreenerEngine:
             base_score += self._score_momentum(pct_chg, base_signals)
             base_score += self._score_valuation(pe_ratio, pb_ratio, base_signals)
             base_score += self._score_market_cap(market_cap, base_signals)
+            base_score = min(base_score, 85.0)
 
             strategy_scores: Dict[str, Any] = {}
             hist_df = history_cache.get(code)
@@ -900,6 +901,7 @@ class ScreenerEngine:
             base_score += self._score_momentum(pct_chg, signals)
             base_score += self._score_valuation(pe_ratio, pb_ratio, signals)
             base_score += self._score_market_cap(market_cap, signals)
+            base_score = min(base_score, 85.0)  # no stock gets a perfect base score
 
             strategy_scores: Dict[str, Any] = {}
             if code in failed_codes:

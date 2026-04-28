@@ -68,31 +68,34 @@ def handle_alpha_modify_factor(strategy_name: str, factor_id: str, new_value: fl
     if env.state is None:
         return {"status": "error", "error": "Environment not initialized"}
 
-    tmpl = env.state.strategies.get(strategy_name)
-    if tmpl is None:
-        return {"status": "error", "error": "Strategy '%s' not found. Available: %s" % (
-            strategy_name, list(env.state.strategies.keys()),
-        )}
+    from src.alpha.factor_debug_env import AgentAction
 
-    factor = next((f for f in tmpl.factors if f.id == factor_id), None)
-    if factor is None:
-        return {"status": "error", "error": "Factor '%s' not found. Available: %s" % (
-            factor_id, [f.id for f in tmpl.factors],
-        )}
+    try:
+        action = AgentAction(
+            action_type="modify_factor",
+            strategy_name=strategy_name,
+            factor_id=factor_id,
+            new_value=float(new_value),
+        )
+        state, reward, info = env.step(action)
+        if "error" in info:
+            return {"status": "error", "error": info["error"]}
 
-    old_val = env.state.factor_values.get(strategy_name, {}).get(factor_id, factor.default)
-    if strategy_name not in env.state.factor_values:
-        env.state.factor_values[strategy_name] = {}
-    env.state.factor_values[strategy_name][factor_id] = float(new_value)
+        tmpl = env.state.strategies.get(strategy_name)
+        factor = next((f for f in tmpl.factors if f.id == factor_id), None) if tmpl else None
 
-    return {
-        "status": "ok",
-        "strategy": strategy_name,
-        "factor": factor_id,
-        "old_value": old_val,
-        "new_value": new_value,
-        "range": list(factor.range),
-    }
+        return {
+            "status": "ok",
+            "strategy": strategy_name,
+            "factor": factor_id,
+            "new_value": env.state.factor_values.get(strategy_name, {}).get(factor_id, factor.default if factor else 0),
+            "range": list(factor.range) if factor else [],
+        }
+    except ValueError as ve:
+        return {"status": "error", "error": str(ve)}
+    except Exception as e:
+        logger.exception("modify_factor failed")
+        return {"status": "error", "error": str(e)}
 
 
 def handle_alpha_modify_weight(strategy_name: str, new_weight: float) -> Dict[str, Any]:
@@ -100,18 +103,28 @@ def handle_alpha_modify_weight(strategy_name: str, new_weight: float) -> Dict[st
     if env.state is None:
         return {"status": "error", "error": "Environment not initialized"}
 
-    if strategy_name not in env.state.strategies:
-        return {"status": "error", "error": "Strategy '%s' not found" % strategy_name}
+    from src.alpha.factor_debug_env import AgentAction
 
-    old_weight = env.state.strategy_weights.get(strategy_name, env.state.strategies[strategy_name].weight)
-    env.state.strategy_weights[strategy_name] = float(new_weight)
+    try:
+        action = AgentAction(
+            action_type="modify_weight",
+            strategy_name=strategy_name,
+            new_weight=float(new_weight),
+        )
+        state, reward, info = env.step(action)
+        if "error" in info:
+            return {"status": "error", "error": info["error"]}
 
-    return {
-        "status": "ok",
-        "strategy": strategy_name,
-        "old_weight": old_weight,
-        "new_weight": new_weight,
-    }
+        return {
+            "status": "ok",
+            "strategy": strategy_name,
+            "new_weight": env.state.strategy_weights.get(strategy_name, 0),
+        }
+    except ValueError as ve:
+        return {"status": "error", "error": str(ve)}
+    except Exception as e:
+        logger.exception("modify_weight failed")
+        return {"status": "error", "error": str(e)}
 
 
 def handle_alpha_run_simulation() -> Dict[str, Any]:

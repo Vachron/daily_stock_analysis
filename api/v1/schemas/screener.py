@@ -135,6 +135,7 @@ class ScreenerTrackingUpdateResponse(BaseModel):
 class ScreenerBacktestFeedbackResponse(BaseModel):
     verified: int = 0
     total_checked: int = 0
+    optimization: Optional[Dict[str, Any]] = Field(None, description="策略权重优化详情")
 
 
 class PoolInitRequest(BaseModel):
