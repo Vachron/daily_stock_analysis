@@ -582,7 +582,7 @@ const BacktestPage: React.FC = () => {
             {klineStats && klineStats.ready && (
               <div className="flex items-center gap-2 text-[10px] text-success">
                 <div className="h-1.5 w-1.5 rounded-full bg-success" />
-                K线数据就绪 · {(klineStats.total_size_mb as number)?.toFixed(0) || '?'} MB · {(klineStats.date_range_to as string) || ''}
+                K线数据就绪 · {Number(klineStats?.total_size_mb ?? 0).toFixed(0)} MB · {String(klineStats?.date_range_to ?? '')}
               </div>
             )}
             <div className="flex items-center gap-3 pt-1">
@@ -601,48 +601,60 @@ const BacktestPage: React.FC = () => {
             </div>
             {pfRunError && <ApiErrorAlert error={pfRunError} className="mt-2" />}
             {pfRunResult && !pfRunError && (
-              <>
-                <div className="rounded-xl bg-card/50 border border-border/30 p-3 grid grid-cols-4 sm:grid-cols-5 gap-2 text-center">
-                  <div><div className="text-[10px] text-muted-text">夏普</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.sharpe_ratio ?? 0).toFixed(2)}</div></div>
-                  <div><div className="text-[10px] text-muted-text">总收益</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.total_return_pct ?? 0).toFixed(1)}%</div></div>
-                  <div><div className="text-[10px] text-muted-text">最大回撤</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.max_drawdown_pct ?? 0).toFixed(1)}%</div></div>
-                  <div><div className="text-[10px] text-muted-text">超额收益</div><div className="text-xs font-mono text-foreground">{((pfRunResult.metrics as Record<string, number>)?.excess_return_pct ?? 0).toFixed(1)}%</div></div>
-                  <div><div className="text-[10px] text-muted-text">耗时</div><div className="text-xs font-mono text-foreground">{pfRunResult.elapsed_seconds as number}s</div></div>
-                </div>
-                {(pfRunResult.nav as Array<Record<string, number>>)?.length > 0 && (
-                  <Card variant="gradient" padding="sm">
-                    <div className="text-[10px] text-secondary-text mb-2">资金曲线</div>
-                    <ResponsiveContainer width="100%" height={160}>
-                      <ComposedChart data={(pfRunResult.nav as Array<Record<string, number>>).map((d: Record<string, number>) => {
-                        const keys = Object.keys(d);
-                        const dateKey = keys.find(k => k.toLowerCase().includes('date')) || keys[0];
-                        const navKey = keys.find(k => k.toLowerCase().includes('nav') && !k.toLowerCase().includes('bench')) || keys[1];
-                        return { date: d[dateKey], nav: d[navKey] };
-                      })}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                        <XAxis dataKey="date" hide />
-                        <YAxis hide domain={['auto', 'auto']} />
-                        <RechartsTooltip
-                          contentStyle={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
-                          formatter={(v: number) => [`¥${v.toFixed(0)}`, 'NAV']}
-                        />
-                        <Line type="monotone" dataKey="nav" stroke="#22d3ee" strokeWidth={1.5} dot={false} />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </Card>
-                )}
-                {(pfRunResult.trades as Array<Record<string, unknown>>)?.length > 0 && (
-                  <TradeDetailTable trades={(pfRunResult.trades as Array<Record<string, unknown>>).map((t: Record<string, unknown>) => ({
-                    date: String(t.date || ''),
-                    code: String(t.code || ''),
-                    action: String(t.action || ''),
-                    shares: Number(t.shares || 0),
-                    price: Number(t.price || 0),
-                    cost: Number(t.cost || 0),
-                    reason: String(t.reason || ''),
-                  }))} />
-                )}
-              </>
+              (() => {
+                const m = (pfRunResult.metrics || {}) as Record<string, number>;
+                const navData: Array<{ date: unknown; nav: unknown }> = Array.isArray(pfRunResult.nav)
+                  ? (pfRunResult.nav as Array<Record<string, unknown>>).map((d) => {
+                      const keys = Object.keys(d);
+                      const dateKey = keys.find(k => k.toLowerCase().includes('date')) || keys[0];
+                      const navKey = keys.find(k => k.toLowerCase().includes('nav') && !k.toLowerCase().includes('bench')) || keys[1];
+                      return { date: d[dateKey] as unknown, nav: d[navKey] as unknown };
+                    })
+                  : [];
+                const trades: Array<{ date: string; code: string; action: string; shares: number; price: number; cost: number; reason: string }> =
+                  Array.isArray(pfRunResult.trades)
+                    ? (pfRunResult.trades as Array<Record<string, unknown>>).map((t) => ({
+                        date: String(t.date || ''),
+                        code: String(t.code || ''),
+                        action: String(t.action || ''),
+                        shares: Number(t.shares || 0),
+                        price: Number(t.price || 0),
+                        cost: Number(t.cost || 0),
+                        reason: String(t.reason || ''),
+                      }))
+                    : [];
+                const elapsed = typeof pfRunResult.elapsed_seconds === 'number' ? pfRunResult.elapsed_seconds : 0;
+
+                return (
+                  <>
+                    <div className="rounded-xl bg-card/50 border border-border/30 p-3 grid grid-cols-4 sm:grid-cols-5 gap-2 text-center">
+                      <div><div className="text-[10px] text-muted-text">夏普</div><div className="text-xs font-mono text-foreground">{(m.sharpe_ratio ?? 0).toFixed(2)}</div></div>
+                      <div><div className="text-[10px] text-muted-text">总收益</div><div className="text-xs font-mono text-foreground">{(m.total_return_pct ?? 0).toFixed(1)}%</div></div>
+                      <div><div className="text-[10px] text-muted-text">最大回撤</div><div className="text-xs font-mono text-foreground">{(m.max_drawdown_pct ?? 0).toFixed(1)}%</div></div>
+                      <div><div className="text-[10px] text-muted-text">超额收益</div><div className="text-xs font-mono text-foreground">{(m.excess_return_pct ?? 0).toFixed(1)}%</div></div>
+                      <div><div className="text-[10px] text-muted-text">耗时</div><div className="text-xs font-mono text-foreground">{elapsed}s</div></div>
+                    </div>
+                    {navData.length > 0 && (
+                      <Card variant="gradient" padding="sm">
+                        <div className="text-[10px] text-secondary-text mb-2">资金曲线</div>
+                        <ResponsiveContainer width="100%" height={160}>
+                          <ComposedChart data={navData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                            <XAxis dataKey="date" hide />
+                            <YAxis hide domain={['auto', 'auto']} />
+                            <RechartsTooltip
+                              contentStyle={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
+                              formatter={(v: number) => [`¥${v.toFixed(0)}`, 'NAV']}
+                            />
+                            <Line type="monotone" dataKey="nav" stroke="#22d3ee" strokeWidth={1.5} dot={false} />
+                          </ComposedChart>
+                        </ResponsiveContainer>
+                      </Card>
+                    )}
+                    {trades.length > 0 && <TradeDetailTable trades={trades} />}
+                  </>
+                );
+              })()
             )}
           </div>
         )}
