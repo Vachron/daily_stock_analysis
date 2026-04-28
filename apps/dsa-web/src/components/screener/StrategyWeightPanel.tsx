@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Scale, TrendingUp, TrendingDown, Minus, RefreshCw, Loader2, ChevronRight, ChevronDown, Info, X } from 'lucide-react';
+import apiClient from '../../api/index';
 
 interface WeightChange {
   strategy: string;
@@ -82,7 +83,6 @@ export function StrategyWeightPanel({ visible, onClose }: WeightPanelProps) {
     setIsLoading(true);
     setError(null);
     try {
-      const { apiClient } = await import('../../api/index');
       const response = await apiClient.get<Record<string, unknown>>('/api/v1/screener/weights/interpretation');
       setData(response.data);
     } catch (err: unknown) {

@@ -12,6 +12,7 @@ import {
 import { backtestApi } from '../api/backtest';
 import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
+import apiClient from '../api/index';
 import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, Tooltip } from '../components/common';
 import type {
   BacktestResultItem, BacktestRunResponse, EquityCurveResponse, PerformanceMetrics,
@@ -329,7 +330,6 @@ const BacktestPage: React.FC = () => {
   const checkKlineStats = useCallback(async () => {
     setIsCheckingKline(true);
     try {
-      const { apiClient } = await import('../api/index');
       const response = await apiClient.get<Record<string, unknown>>('/api/v1/backtest/kline-stats');
       setKlineStats(response.data?.stats as Record<string, unknown> || null);
     } catch {
@@ -344,7 +344,6 @@ const BacktestPage: React.FC = () => {
     setPfRunResult(null);
     setPfRunError(null);
     try {
-      const { apiClient } = await import('../api/index');
       const params: Record<string, string | number> = {
         initial_capital: initCapital,
         max_positions: maxPositions,
