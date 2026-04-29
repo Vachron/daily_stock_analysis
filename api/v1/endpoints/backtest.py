@@ -877,3 +877,119 @@ async def run_montecarlo(
             status_code=500,
             detail={"error": "internal_error", "message": f"蒙特卡洛模拟失败: {str(exc)}"},
         )
+
+
+@router.get(
+    "/strategy/stream",
+    summary="SSE 流式策略回测进度",
+    description="通过 GET+Query 参数启动 SSE 策略回测流, 兼容 EventSource API",
+)
+async def stream_strategy_backtest(
+    request: Request,
+    strategy: str = Query(..., description="策略名称"),
+    codes: Optional[str] = Query(None, description="股票代码逗号分隔"),
+    cash: float = Query(100000, description="初始资金"),
+    start_date: Optional[str] = Query(None, description="开始日期"),
+    end_date: Optional[str] = Query(None, description="结束日期"),
+):
+    import asyncio
+    import json as _json
+
+    code_list = [c.strip() for c in codes.split(",") if c.strip()] if codes else []
+
+    async def generate_events():
+        try:
+            from src.backtest.adapters.yaml_strategy import yaml_to_strategy_class
+            from src.backtest.engine import Backtest
+            from data_provider.kline_repo import KlineRepo, ORIGIN_DATE
+            import pandas as pd
+            from datetime import timedelta
+            import time as _time
+
+            yield f"event: connected\ndata: {{}}\n\n"
+            await asyncio.sleep(0)
+
+            yield f"event: progress\ndata: {_json.dumps({'stage': 'checking', 'message': '正在检查策略和数据...', 'progressPct': 5})}\n\n"
+            await asyncio.sleep(0)
+
+            kline_repo = KlineRepo()
+            dfs = []
+            for code in code_list:
+                df = kline_repo.get_history(code)
+                if df is not None and not df.empty:
+                    df = df.rename(columns={
+                        "open": "Open", "high": "High", "low": "Low",
+                        "close": "Close", "volume": "Volume",
+                    })
+                    if "date" in df.columns:
+                        df["Date"] = pd.to_datetime(df["date"].apply(
+                            lambda d: ORIGIN_DATE + timedelta(days=int(d))
+                        ))
+                        df = df.set_index("Date")
+                    dfs.append(df)
+
+            if not dfs:
+                yield f"event: error\ndata: {_json.dumps({'message': '未找到K线数据'})}\n\n"
+                return
+
+            data_df = dfs[0]
+            if start_date:
+                data_df = data_df[data_df.index >= start_date]
+            if end_date:
+                data_df = data_df[data_df.index <= end_date]
+
+            yield f"event: progress\ndata: {_json.dumps({'stage': 'evaluating', 'message': f'开始回测 ({len(data_df)} 根K线)...', 'progressPct': 20, 'total_bars': len(data_df)})}\n\n"
+            await asyncio.sleep(0)
+
+            strategy_cls = yaml_to_strategy_class(strategy)
+            bt = Backtest(data_df, strategy_cls, cash=cash)
+
+            t0 = _time.time()
+
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, bt.run)
+
+            elapsed = _time.time() - t0
+
+            n_trades = int(result.stats.get("# Trades", 0))
+            yield f"event: progress\ndata: {_json.dumps({'stage': 'evaluating', 'message': f'回测完成, 共 {n_trades} 笔交易', 'progressPct': 95})}\n\n"
+            await asyncio.sleep(0)
+
+            stats_dict = {}
+            for k, v in result.stats.items():
+                if v is None: stats_dict[str(k)] = None
+                elif isinstance(v, (int, float)) and v == int(float(v)): stats_dict[str(k)] = int(float(v))
+                elif isinstance(v, (float,)): stats_dict[str(k)] = float(v)
+                else: stats_dict[str(k)] = str(v)
+
+            trades_json = result.to_json().get('trades', []) if hasattr(result, 'to_json') else []
+            equity_json = result.to_json().get('equity_curve', []) if hasattr(result, 'to_json') else []
+
+            yield f"event: completed\ndata: {_json.dumps({
+                'result_id': 'bt2_' + strategy + '_' + (code_list[0] if code_list else ''),
+                'strategy_name': result.strategy_name,
+                'symbol': result.symbol or (code_list[0] if code_list else ''),
+                'start_date': str(result.start_date) if result.start_date else None,
+                'end_date': str(result.end_date) if result.end_date else None,
+                'initial_cash': result.initial_cash,
+                'stats': stats_dict,
+                'trades': trades_json,
+                'equity_curve': equity_json,
+                'engine_version': result.engine_version,
+                'elapsed_seconds': elapsed,
+                'total_bars': len(data_df),
+            })}\n\n"
+
+        except Exception as exc:
+            logger.error(f"SSE策略回测失败: {exc}", exc_info=True)
+            yield f"event: error\ndata: {_json.dumps({'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

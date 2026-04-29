@@ -2,6 +2,7 @@ import { BarChart3 } from 'lucide-react';
 
 interface PerformanceTabProps {
   metrics: Record<string, number>;
+  v2Stats?: Record<string, number>;
 }
 
 const METRIC_META: Array<{ key: string; label: string; format: 'pct' | 'num' | 'int'; tooltip: string }> = [
@@ -38,8 +39,9 @@ function valueColor(val: number | undefined, format: 'pct' | 'num' | 'int'): str
   return 'text-foreground';
 }
 
-export function PerformanceTab({ metrics }: PerformanceTabProps) {
-  if (!metrics || Object.keys(metrics).length === 0) {
+export function PerformanceTab({ metrics, v2Stats }: PerformanceTabProps) {
+  const effectiveMetrics = v2Stats || metrics;
+  if (!effectiveMetrics || Object.keys(effectiveMetrics).length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-muted-text gap-2">
         <BarChart3 className="h-8 w-8" />
@@ -48,7 +50,7 @@ export function PerformanceTab({ metrics }: PerformanceTabProps) {
     );
   }
 
-  const visible = METRIC_META.filter(m => metrics[m.key] != null);
+  const visible = METRIC_META.filter(m => effectiveMetrics[m.key] != null);
 
   return (
     <div className="overflow-x-auto">
@@ -66,8 +68,8 @@ export function PerformanceTab({ metrics }: PerformanceTabProps) {
               <td className="py-2 px-3 text-secondary-text font-medium" title={m.tooltip}>
                 {m.label}
               </td>
-              <td className={`py-2 px-3 text-right font-mono tabular-nums ${valueColor(metrics[m.key], m.format)}`}>
-                {formatValue(metrics[m.key], m.format)}
+              <td className={`py-2 px-3 text-right font-mono tabular-nums ${valueColor(effectiveMetrics[m.key], m.format)}`}>
+                {formatValue(effectiveMetrics[m.key], m.format)}
               </td>
               <td className="hidden sm:table-cell py-2 px-3 text-muted-text text-[10px]">
                 {m.tooltip}
