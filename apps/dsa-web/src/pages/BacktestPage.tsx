@@ -536,7 +536,7 @@ const BacktestPage: React.FC = () => {
       const response = await backtestApi.run({
         code, codes: codes && codes.length > 1 ? codes : undefined,
         force: forceRerun || undefined, minAgeDays: forceRerun ? 0 : undefined, evalWindowDays,
-        autoAnalyze: initialAutoRun || undefined,
+        autoAnalyze: true,
       });
       setRunResult(response);
       setWizardStep('results');
@@ -548,7 +548,7 @@ const BacktestPage: React.FC = () => {
     } finally {
       setIsRunning(false);
     }
-  }, [selectedCodes, evalDays, forceRerun, loadResults, initialAutoRun]);
+  }, [selectedCodes, evalDays, forceRerun, loadResults]);
 
   useEffect(() => {
     if (initialAutoRun && selectedCodes.length > 0) {
