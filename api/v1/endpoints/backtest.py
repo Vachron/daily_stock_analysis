@@ -278,17 +278,8 @@ async def stream_portfolio_backtest(
     request: Request,
     run_id: str = Query(..., description="回测任务 ID"),
 ):
-    """
-    SSE endpoint for portfolio backtest progress streaming.
-    Returns `progress` events during simulation, and a `completed` event at the end.
-
-    run_id is a hash of the parameters — if the same params produce the same run_id,
-    the result may be cached.
-    """
     import asyncio
     import json as _json
-    import hashlib
-    from datetime import date as _date
 
     async def generate_events():
         try:
@@ -299,24 +290,17 @@ async def stream_portfolio_backtest(
                 yield f"event: error\ndata: {_json.dumps({'message': 'K-line data not available. Run import_kline.py first.'})}\n\n"
                 return
 
-            # Parse run_id from query params (re-run the same params)
-            # For now: run synchronously and forward progress
-            # Extract params from run_id (format: portfolio_{capital}_{start}_{end}_{positions}_{rebalance})
-            pool = run_id.rsplit("_", 1)
-            if len(pool) < 2:
-                yield f"event: error\ndata: {_json.dumps({'message': 'Invalid run_id'})}\n\n"
-                return
-
             yield f"event: connected\ndata: {{}}\n\n"
+            await asyncio.sleep(0)
 
-            # The actual progress comes from engine.run() — we wrap it
             params = BacktestParams(
                 initial_capital=100000,
                 max_positions=10,
                 rebalance_freq_days=5,
             )
 
-            result = engine.run(params)
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, engine.run, params)
 
             if result.success:
                 nav_json = None
