@@ -415,8 +415,21 @@ const ScreenerPage: React.FC = () => {
     }
   }, [isRunning]);
 
-  const handleAskStock = useCallback((code: string, name: string) => {
-    navigate(`/chat?stock=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
+  const handleAskStock = useCallback((code: string, name: string, strategyScores?: StrategyScores) => {
+    const params = new URLSearchParams();
+    params.set('stock', code);
+    params.set('name', name);
+    if (strategyScores) {
+      const compact: Record<string, unknown> = {
+        fusionScore: strategyScores.fusionScore,
+        regime: strategyScores.regime,
+        strategies: (strategyScores.triggeredStrategies || []).slice(0, 8).map(s => ({
+          n: s.name, s: s.score, w: s.weight,
+        })),
+      };
+      params.set('signals', JSON.stringify(compact));
+    }
+    navigate(`/chat?${params.toString()}`);
   }, [navigate]);
 
   const handleCloseWatch = useCallback((code: string, name: string) => {
@@ -924,8 +937,7 @@ const ScreenerPage: React.FC = () => {
                       <div className="flex items-center gap-2">
                         <button
                           type="button"
-                          onClick={() => handleAskStock(item.code, item.name || item.code)}
-                          className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
+                          onClick={() => handleAskStock(item.code, item.name || item.code, item.strategyScores)}
                           title="AI 问股"
                         >
                           <MessageSquare className="h-3.5 w-3.5" />
@@ -1312,7 +1324,7 @@ const ScreenerPage: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <button
                             type="button"
-                            onClick={() => handleAskStock(item.code, item.name || item.code)}
+                            onClick={() => handleAskStock(item.code, item.name || item.code, item.strategyScores)}
                             className="inline-flex items-center gap-1 text-xs text-cyan hover:text-cyan/80 transition-colors"
                             title="AI 问股"
                           >

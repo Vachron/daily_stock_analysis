@@ -46,6 +46,22 @@ export interface AlphaHealthResponse {
   rotations: Array<{ strategy: string; factor: string; action: string; message: string }>;
 }
 
+export interface AlphaFactorDetail {
+  name: string;
+  displayName: string;
+  category: string;
+  weight: number;
+  factors: Array<{
+    id: string;
+    displayName: string;
+    type: string;
+    default: number;
+    current: number;
+    range: [number, number];
+    step: number;
+  }>;
+}
+
 export const alphaApi = {
   run: async (params: AlphaRunRequest = {}): Promise<{ status: string; message: string }> => {
     const response = await apiClient.post<{ status: string; message: string }>(
@@ -73,5 +89,10 @@ export const alphaApi = {
       '/api/v1/alpha/config/best',
     );
     return response.data;
+  },
+
+  getFactors: async (): Promise<AlphaFactorDetail[]> => {
+    const response = await apiClient.get<Record<string, unknown>[]>(`/api/v1/alpha/factors`);
+    return (response.data || []).map(toCamelCase) as unknown as AlphaFactorDetail[];
   },
 };

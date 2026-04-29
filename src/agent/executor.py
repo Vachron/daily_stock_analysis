@@ -611,6 +611,27 @@ class AgentExecutor:
                 strategy = context["previous_strategy"]
                 strategy_text = json.dumps(strategy, ensure_ascii=False) if isinstance(strategy, dict) else str(strategy)
                 context_parts.append(f"上次策略分析:\n{strategy_text}")
+            if context.get("signals"):
+                signals_data = context["signals"]
+                if isinstance(signals_data, dict):
+                    strategies = signals_data.get("strategies") or signals_data.get("triggeredStrategies") or []
+                    fusion = signals_data.get("fusionScore", "?")
+                    regime = signals_data.get("regime", "")
+                    parts_list = []
+                    if fusion:
+                        parts_list.append(f"综合评分: {fusion}")
+                    if regime:
+                        parts_list.append(f"市场状态: {regime}")
+                    if strategies:
+                        strat_texts = []
+                        for s in strategies if isinstance(strategies, list) else []:
+                            name = s.get("n") or s.get("name", "?")
+                            score = s.get("s") or s.get("score", 0)
+                            weight = s.get("w") or s.get("weight", 1)
+                            strat_texts.append(f"{name}(得分{score},权重{weight})")
+                        parts_list.append("触发策略: " + ", ".join(strat_texts[:8]))
+                    if parts_list:
+                        context_parts.append("选股系统信号:\n" + "\n".join(parts_list))
             if context_parts:
                 context_msg = "[系统提供的历史分析上下文，可供参考对比]\n" + "\n".join(context_parts)
                 messages.append({"role": "user", "content": context_msg})

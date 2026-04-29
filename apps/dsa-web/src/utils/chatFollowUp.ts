@@ -9,6 +9,7 @@ export interface ChatFollowUpContext {
   previous_strategy?: unknown;
   previous_price?: number;
   previous_change_pct?: number;
+  signals?: Record<string, unknown>;
 }
 
 type ResolveChatFollowUpContextParams = {
@@ -64,9 +65,27 @@ export function parseFollowUpRecordId(recordId: string | null): number | undefin
   return parsed;
 }
 
-export function buildFollowUpPrompt(stockCode: string, stockName: string | null): string {
+export function buildFollowUpPrompt(
+  stockCode: string,
+  stockName: string | null,
+  signals?: Record<string, unknown> | null,
+): string {
   const displayName = stockName ? `${stockName}(${stockCode})` : stockCode;
-  return `请深入分析 ${displayName}`;
+  let prompt = `请深入分析 ${displayName}`;
+
+  if (signals) {
+    const strategies = signals.strategies as Array<{ n: string; s: number; w: number }> | undefined;
+    const fusionScore = signals.fusionScore as number | undefined;
+    if (strategies && strategies.length > 0) {
+      const topStrategies = strategies
+        .sort((a, b) => b.s - a.s)
+        .map(s => `${s.n}(得分${s.s},权重${s.w?.toFixed(2)})`)
+        .join('、');
+      prompt += `\n该股票在选股系统中综合评分为${fusionScore?.toFixed(1) ?? '未知'}分，触发策略: ${topStrategies}。请结合这些策略信号进行解读。`;
+    }
+  }
+
+  return prompt;
 }
 
 export function buildChatFollowUpContext(

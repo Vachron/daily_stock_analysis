@@ -1,4 +1,3 @@
-import type React from 'react';
 import { Sliders } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import apiClient from '../../api/index';

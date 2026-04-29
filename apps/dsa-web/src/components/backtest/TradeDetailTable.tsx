@@ -1,4 +1,3 @@
-import type React from 'react';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 
 interface Trade {

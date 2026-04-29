@@ -217,17 +217,24 @@ const ChatPage: React.FC = () => {
     const stock = sanitizeFollowUpStockCode(searchParams.get('stock'));
     const name = sanitizeFollowUpStockName(searchParams.get('name'));
     const recordId = parseFollowUpRecordId(searchParams.get('recordId'));
+    const signalsRaw = searchParams.get('signals');
 
     if (!stock) {
       setSearchParams({}, { replace: true });
       return;
     }
 
+    let signalsContext: Record<string, unknown> | undefined;
+    if (signalsRaw) {
+      try { signalsContext = JSON.parse(signalsRaw); } catch { /* ignore */ }
+    }
+
     const hydrationToken = ++followUpHydrationTokenRef.current;
-    setInput(buildFollowUpPrompt(stock, name));
+    setInput(buildFollowUpPrompt(stock, name, signalsContext));
     followUpContextRef.current = {
       stock_code: stock,
       stock_name: name,
+      signals: signalsContext,
     };
     if (recordId !== undefined) {
       setIsFollowUpContextLoading(true);

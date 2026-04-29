@@ -170,3 +170,26 @@ class FactorModel:
                 t.name for t in templates if not t.factors
             ],
         }
+
+    @classmethod
+    def get_factor_details(cls, templates: List[StrategyTemplate]) -> List[Dict[str, Any]]:
+        result: List[Dict[str, Any]] = []
+        for tpl in templates:
+            strategy_info: Dict[str, Any] = {
+                "strategy": tpl.name,
+                "display_name": tpl.display_name,
+                "description": tpl.description,
+                "weight": tpl.weight,
+                "factors": [],
+            }
+            for f in tpl.factors:
+                strategy_info["factors"].append({
+                    "id": f.id,
+                    "display_name": f.display_name,
+                    "type": f.type,
+                    "default": f.default,
+                    "range": list(f.range),
+                    "step": f.step,
+                })
+            result.append(strategy_info)
+        return result

@@ -41,7 +41,8 @@ DAILY_DIR = DATA_DIR / "daily"
 
 def _find_csv_base() -> Tuple[Path, str]:
     candidates = [
-        (PROJECT_ROOT / "data" / "sources" / "kline_source", "project sources/"),
+        (PROJECT_ROOT / "data" / "sources", "project data/sources/"),
+        (PROJECT_ROOT / "data" / "sources" / "kline_source", "project data/sources/kline_source/"),
         (Path(r"D:\BaiduNetdiskDownload\stock6\每天一个文件\前复权"), "BaiduNetdisk download/"),
     ]
     for path, desc in candidates:
