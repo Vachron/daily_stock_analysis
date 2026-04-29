@@ -241,6 +241,163 @@ class BacktestService:
             "analyzed": analyzed_count,
         }
 
+    def run_backtest_with_progress(
+        self,
+        *,
+        code: Optional[str] = None,
+        codes: Optional[List[str]] = None,
+        force: bool = False,
+        eval_window_days: Optional[int] = None,
+        min_age_days: Optional[int] = None,
+        limit: int = 200,
+        auto_analyze: bool = False,
+    ):
+        import json as _json
+
+        effective_code = None
+        effective_codes = codes if codes else ([code] if code else None)
+        config = get_config()
+
+        if eval_window_days is None:
+            eval_window_days = getattr(config, "backtest_eval_window_days", 10)
+        if min_age_days is None:
+            min_age_days = getattr(config, "backtest_min_age_days", 14)
+
+        engine_version = getattr(config, "backtest_engine_version", "v1")
+        neutral_band_pct = float(getattr(config, "backtest_neutral_band_pct", 2.0))
+        commission_rate = float(getattr(config, "backtest_commission_rate", 0.0003))
+        slippage_pct = float(getattr(config, "backtest_slippage_pct", 0.001))
+
+        eval_config = EvaluationConfig(
+            eval_window_days=int(eval_window_days),
+            neutral_band_pct=neutral_band_pct,
+            engine_version=str(engine_version),
+            commission_rate=commission_rate,
+            slippage_pct=slippage_pct,
+        )
+
+        yield f"event: progress\ndata: {_json.dumps({'stage': 'checking', 'message': '正在检查分析记录...', 'progressPct': 5})}\n\n"
+
+        candidates = self.repo.get_candidates(
+            code=effective_code,
+            codes=effective_codes,
+            min_age_days=int(min_age_days),
+            limit=int(limit),
+            eval_window_days=int(eval_window_days),
+            engine_version=str(engine_version),
+            force=force,
+        )
+
+        analyzed_count = 0
+
+        if auto_analyze and len(candidates) == 0 and effective_codes:
+            effective_code_list = effective_codes
+            codes_to_analyze = self._filter_codes_without_history(effective_code_list)
+            if codes_to_analyze:
+                yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'正在自动分析 {len(codes_to_analyze)} 只股票, 获取数据并运行AI分析...', 'progressPct': 10, 'codes': codes_to_analyze[:10]})}\n\n"
+
+                for i, ac in enumerate(codes_to_analyze):
+                    pct = 10 + int((i / max(len(codes_to_analyze), 1)) * 40)
+                    yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'分析中: {ac} ({i+1}/{len(codes_to_analyze)})', 'progressPct': pct, 'code': ac, 'codeIndex': i+1, 'codeTotal': len(codes_to_analyze)})}\n\n"
+                    try:
+                        import uuid
+                        from src.services.analysis_service import AnalysisService
+                        service = AnalysisService()
+                        query_id = uuid.uuid4().hex
+                        result = service.analyze_stock(
+                            stock_code=ac,
+                            report_type=None,
+                            force_refresh=False,
+                            query_id=query_id,
+                            send_notification=False,
+                        )
+                        if result is not None:
+                            analyzed_count += 1
+                    except Exception as exc:
+                        logger.error("Auto-analysis error for %s: %s", ac, exc)
+
+                yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'自动分析完成: {analyzed_count}/{len(codes_to_analyze)} 只成功', 'progressPct': 50})}\n\n"
+
+                candidates = self.repo.get_candidates(
+                    code=effective_code,
+                    codes=effective_codes,
+                    min_age_days=0,
+                    limit=int(limit),
+                    eval_window_days=int(eval_window_days),
+                    engine_version=str(engine_version),
+                    force=True,
+                )
+
+        if not candidates:
+            yield f"event: error\ndata: {_json.dumps({'message': '未找到可回测的分析记录。请先在首页对股票执行分析。'})}\n\n"
+            return
+
+        processed = 0
+        completed = 0
+        insufficient = 0
+        errors = 0
+        touched_codes: set[str] = set()
+        results_to_save: List[BacktestResult] = []
+        total = len(candidates)
+
+        yield f"event: progress\ndata: {_json.dumps({'stage': 'evaluating', 'message': f'开始回测评估 ({total} 条记录)...', 'progressPct': 50, 'total': total})}\n\n"
+
+        for analysis in candidates:
+            processed += 1
+            touched_codes.add(analysis.code)
+
+            if processed % max(1, total // 20) == 0 or processed <= 3:
+                pct = 50 + int((processed / max(total, 1)) * 45)
+                yield f"event: progress\ndata: {_json.dumps({'stage': 'evaluating', 'message': f'回测中: {processed}/{total} ({analysis.code})', 'progressPct': pct, 'current': processed, 'total': total, 'code': analysis.code})}\n\n"
+
+            try:
+                analysis_date = self._resolve_analysis_date(analysis)
+                if analysis_date is None:
+                    errors += 1
+                    results_to_save.append(BacktestResult(analysis_history_id=analysis.id, code=analysis.code, eval_window_days=int(eval_window_days), engine_version=str(engine_version), eval_status="error", evaluated_at=datetime.now(), operation_advice=analysis.operation_advice))
+                    continue
+
+                start_daily = self.stock_repo.get_start_daily(code=analysis.code, analysis_date=analysis_date)
+                if start_daily is None or start_daily.close is None:
+                    self._try_fill_daily_data(code=analysis.code, analysis_date=analysis_date, eval_window_days=eval_window_days)
+                    start_daily = self.stock_repo.get_start_daily(code=analysis.code, analysis_date=analysis_date)
+
+                if start_daily is None or start_daily.close is None:
+                    insufficient += 1
+                    results_to_save.append(BacktestResult(analysis_history_id=analysis.id, code=analysis.code, analysis_date=analysis_date, eval_window_days=int(eval_window_days), engine_version=str(engine_version), eval_status="insufficient_data", evaluated_at=datetime.now(), operation_advice=analysis.operation_advice))
+                    continue
+
+                forward_bars = self.stock_repo.get_forward_bars(code=analysis.code, analysis_date=start_daily.date, eval_window_days=int(eval_window_days))
+                if len(forward_bars) < int(eval_window_days):
+                    self._try_fill_daily_data(code=analysis.code, analysis_date=start_daily.date, eval_window_days=eval_window_days)
+                    forward_bars = self.stock_repo.get_forward_bars(code=analysis.code, analysis_date=start_daily.date, eval_window_days=int(eval_window_days))
+
+                evaluation = BacktestEngine.evaluate_single(operation_advice=analysis.operation_advice, analysis_date=start_daily.date, start_price=float(start_daily.close), forward_bars=forward_bars, stop_loss=analysis.stop_loss, take_profit=analysis.take_profit, config=eval_config)
+
+                status = evaluation.get("eval_status")
+                if status == "insufficient_data":
+                    insufficient += 1
+                elif status == "completed":
+                    completed += 1
+                else:
+                    errors += 1
+
+                results_to_save.append(BacktestResult(analysis_history_id=analysis.id, code=analysis.code, analysis_date=evaluation.get("analysis_date"), eval_window_days=int(evaluation.get("eval_window_days") or eval_window_days), engine_version=str(evaluation.get("engine_version") or engine_version), eval_status=str(evaluation.get("eval_status") or "error"), evaluated_at=datetime.now(), operation_advice=evaluation.get("operation_advice"), position_recommendation=evaluation.get("position_recommendation"), start_price=evaluation.get("start_price"), end_close=evaluation.get("end_close"), max_high=evaluation.get("max_high"), min_low=evaluation.get("min_low"), stock_return_pct=evaluation.get("stock_return_pct"), direction_expected=evaluation.get("direction_expected"), first_hit_trading_days=evaluation.get("first_hit_trading_days"), simulated_entry_price=evaluation.get("simulated_entry_price"), simulated_exit_price=evaluation.get("simulated_exit_price"), simulated_exit_reason=evaluation.get("simulated_exit_reason"), simulated_return_pct=evaluation.get("simulated_return_pct"),
+                ))
+            except Exception as exc:
+                errors += 1
+                logger.error(f"回测失败: {analysis.code}#{analysis.id}: {exc}")
+                results_to_save.append(BacktestResult(analysis_history_id=analysis.id, code=analysis.code, analysis_date=self._resolve_analysis_date(analysis), eval_window_days=int(eval_window_days), engine_version=str(engine_version), eval_status="error", evaluated_at=datetime.now(), operation_advice=analysis.operation_advice))
+
+        saved = 0
+        if results_to_save:
+            saved = self.repo.save_results_batch(results_to_save, replace_existing=force)
+
+        if saved:
+            self._recompute_summaries(touched_codes=sorted(touched_codes), eval_window_days=int(eval_window_days), engine_version=str(engine_version))
+
+        yield f"event: completed\ndata: {_json.dumps({'processed': processed, 'saved': saved, 'completed': completed, 'insufficient': insufficient, 'errors': errors, 'analyzed': analyzed_count})}\n\n"
+
     def get_recent_evaluations(
         self,
         *,

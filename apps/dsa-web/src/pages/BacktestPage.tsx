@@ -18,6 +18,8 @@ import { OverviewTab } from '../components/backtest/OverviewTab';
 import { PerformanceTab } from '../components/backtest/PerformanceTab';
 import { TradeTab } from '../components/backtest/TradeTab';
 import { RiskTab } from '../components/backtest/RiskTab';
+import { useBacktestStream } from '../hooks/useBacktestStream';
+import type { BacktestProgress, BacktestCompleted } from '../hooks/useBacktestStream';
 import type {
   BacktestResultItem, BacktestRunResponse, EquityCurveResponse, PerformanceMetrics,
 } from '../types/backtest';
@@ -414,6 +416,9 @@ const BacktestPage: React.FC = () => {
   const [pfRunResult, setPfRunResult] = useState<PortfolioResult | null>(null);
   const [pfRunError, setPfRunError] = useState<ParsedApiError | null>(null);
   const [isPfRunning, setIsPfRunning] = useState(false);
+  const [streamParams, setStreamParams] = useState<Record<string, unknown> | null>(null);
+  const [streamProgress, setStreamProgress] = useState<BacktestProgress | null>(null);
+  const [streamError, setStreamError] = useState<string | null>(null);
 
   const checkKlineStats = useCallback(async () => {
     setIsCheckingKline(true);
@@ -524,31 +529,58 @@ const BacktestPage: React.FC = () => {
     await fetchEquityCurve();
   }, [fetchResults, fetchPerformance, fetchEquityCurve]);
 
-  const handleRun = useCallback(async () => {
+  const handleStreamCompleted = useCallback((data: BacktestCompleted) => {
+    setRunResult({
+      processed: data.processed,
+      saved: data.saved,
+      completed: data.completed,
+      insufficient: data.insufficient,
+      errors: data.errors,
+      analyzed: data.analyzed,
+    } as unknown as BacktestRunResponse);
+    setWizardStep('results');
+    setCompletedSteps(['config', 'running']);
+    setIsRunning(false);
+    setStreamParams(null);
+    loadResults();
+  }, [loadResults]);
+
+  useBacktestStream(streamParams, {
+    enabled: streamParams !== null,
+    onProgress: setStreamProgress,
+    onCompleted: handleStreamCompleted,
+    onError: (msg) => {
+      setStreamError(msg);
+      setRunError({ title: '回测失败', message: msg, rawMessage: msg, category: 'unknown' });
+      setWizardStep('config');
+      setIsRunning(false);
+      setStreamParams(null);
+    },
+  });
+
+  const handleRun = useCallback(() => {
     setIsRunning(true);
     setRunResult(null);
     setRunError(null);
+    setStreamProgress(null);
+    setStreamError(null);
     setWizardStep('running');
-    try {
-      const codes = selectedCodes.length > 0 ? selectedCodes : undefined;
-      const code = !codes || codes.length === 0 ? undefined : codes.length === 1 ? codes[0] : undefined;
-      const evalWindowDays = evalDays ? parseInt(evalDays, 10) : undefined;
-      const response = await backtestApi.run({
-        code, codes: codes && codes.length > 1 ? codes : undefined,
-        force: forceRerun || undefined, minAgeDays: forceRerun ? 0 : undefined, evalWindowDays,
-        autoAnalyze: true,
-      });
-      setRunResult(response);
-      setWizardStep('results');
-      setCompletedSteps(['config', 'running']);
-      await loadResults();
-    } catch (err) {
-      setRunError(getParsedApiError(err));
-      setWizardStep('config');
-    } finally {
-      setIsRunning(false);
-    }
-  }, [selectedCodes, evalDays, forceRerun, loadResults]);
+
+    const codes = selectedCodes.length > 0 ? selectedCodes : undefined;
+    const code = !codes || codes.length === 0 ? undefined : codes.length === 1 ? codes[0] : undefined;
+    const evalWindowDays = evalDays ? parseInt(evalDays, 10) : undefined;
+
+    const params: Record<string, unknown> = {
+      force: forceRerun || false,
+      min_age_days: forceRerun ? 0 : 14,
+      auto_analyze: true,
+    };
+    if (code) params.code = code;
+    if (codes && codes.length > 1) params.codes = codes;
+    if (evalWindowDays) params.eval_window_days = evalWindowDays;
+
+    setStreamParams(params);
+  }, [selectedCodes, evalDays, forceRerun]);
 
   useEffect(() => {
     if (initialAutoRun && selectedCodes.length > 0) {
@@ -809,14 +841,61 @@ const BacktestPage: React.FC = () => {
         )}
 
         {wizardStep === 'running' && isRunning && (
-          <div className="flex flex-col items-center gap-3 py-8 animate-fade-in">
-            <div className="backtest-spinner lg" />
-            <p className="text-sm text-secondary-text">
-              {initialAutoRun ? '正在分析观察池股票并执行回测，请稍候...' : '正在执行回测评估，请稍候...'}
-            </p>
-            <p className="text-xs text-muted-text">
-              {initialAutoRun ? '系统将自动分析无历史记录的股票，然后对比AI预测与实际走势' : '系统将对比 AI 预测与实际走势，计算胜率和风险指标'}
-            </p>
+          <div className="flex flex-col items-center gap-3 py-6 animate-fade-in">
+            {!streamProgress && !streamError && (
+              <div className="flex flex-col items-center gap-2">
+                <div className="backtest-spinner lg" />
+                <p className="text-sm text-secondary-text">正在连接回测引擎...</p>
+              </div>
+            )}
+
+            {streamProgress && (
+              <div className="w-full max-w-md space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <svg className="h-4 w-4 text-cyan animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                    </svg>
+                    <span className="text-sm font-medium text-foreground">
+                      {streamProgress.stage === 'analyzing' ? '自动分析中' : streamProgress.stage === 'evaluating' ? '回测评估中' : '检查中'}
+                    </span>
+                  </div>
+                  <span className="font-mono text-sm text-cyan">{streamProgress.progressPct}%</span>
+                </div>
+                <div className="h-2 w-full rounded-full bg-border/20 overflow-hidden">
+                  <div
+                    className="h-full rounded-full transition-all duration-500 ease-out"
+                    style={{
+                      width: `${Math.min(100, streamProgress.progressPct)}%`,
+                      background: 'linear-gradient(to right, hsl(var(--primary) / 0.3), hsl(var(--primary) / 0.65))',
+                    }}
+                  />
+                </div>
+                <p className="text-xs text-secondary-text">{streamProgress.message}</p>
+                {streamProgress.codeIndex && streamProgress.codeTotal && (
+                  <div className="flex items-center gap-2 text-[10px] text-muted-text">
+                    <span>{streamProgress.codeIndex}/{streamProgress.codeTotal} 只</span>
+                    {streamProgress.code && <span className="font-mono text-cyan">{streamProgress.code}</span>}
+                  </div>
+                )}
+                {streamProgress.current && streamProgress.total && (
+                  <div className="text-[10px] text-muted-text">
+                    评估进度: {streamProgress.current}/{streamProgress.total}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {streamError && (
+              <div className="flex flex-col items-center gap-2 text-center">
+                <div className="h-8 w-8 rounded-full bg-danger/10 border border-danger/30 flex items-center justify-center">
+                  <span className="text-danger text-sm font-bold">!</span>
+                </div>
+                <p className="text-sm text-danger font-medium">回测失败</p>
+                <p className="text-xs text-muted-text max-w-xs">{streamError}</p>
+              </div>
+            )}
           </div>
         )}
 

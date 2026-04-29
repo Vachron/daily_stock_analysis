@@ -50,9 +50,9 @@ def _validate_analysis_date_range(
         500: {"description": "服务器错误", "model": ErrorResponse},
     },
     summary="触发回测",
-    description="对历史分析记录进行回测评估，并写入 backtest_results/backtest_summaries",
+    description="手动或自动触发回测，计算AI预测与实际走势的偏差",
 )
-def run_backtest(
+def run_backtest_endpoint(
     request: BacktestRunRequest,
     db_manager: DatabaseManager = Depends(get_database_manager),
 ) -> BacktestRunResponse:
@@ -74,6 +74,97 @@ def run_backtest(
             status_code=500,
             detail={"error": "internal_error", "message": f"回测执行失败: {str(exc)}"},
         )
+
+
+@router.post(
+    "/run/stream",
+    summary="SSE 流式回测进度",
+    description="与 /run 功能相同但通过 SSE 实时推送进度事件(自动分析+评估)",
+)
+async def run_backtest_stream(
+    request: BacktestRunRequest,
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    import asyncio
+    import json as _json
+
+    async def generate_events():
+        try:
+            service = BacktestService(db_manager)
+            for sse_event in service.run_backtest_with_progress(
+                code=request.code,
+                codes=request.codes,
+                force=request.force,
+                eval_window_days=request.eval_window_days,
+                min_age_days=request.min_age_days,
+                limit=request.limit,
+                auto_analyze=request.auto_analyze,
+            ):
+                yield sse_event
+                await asyncio.sleep(0)
+        except Exception as exc:
+            logger.error(f"SSE回测失败: {exc}", exc_info=True)
+            yield f"event: error\ndata: {_json.dumps({'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.get(
+    "/run/stream",
+    summary="SSE 流式回测进度 (GET)",
+    description="通过 GET+Query 参数启动 SSE 回测进度流, 兼容 EventSource API",
+)
+async def run_backtest_stream_get(
+    request: Request,
+    code: Optional[str] = Query(None, description="股票代码"),
+    codes: Optional[str] = Query(None, description="多股逗号分隔"),
+    force: bool = Query(False, description="强制重跑"),
+    eval_window_days: Optional[int] = Query(None, ge=1, le=120, description="评估窗口"),
+    min_age_days: Optional[int] = Query(None, description="最小分析天数"),
+    limit: int = Query(200, ge=1, le=500, description="候选上限"),
+    auto_analyze: bool = Query(False, description="无记录时自动分析"),
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    import asyncio
+    import json as _json
+
+    code_list = [c.strip() for c in codes.split(",") if c.strip()] if codes else None
+
+    async def generate_events():
+        try:
+            service = BacktestService(db_manager)
+            for sse_event in service.run_backtest_with_progress(
+                code=code,
+                codes=code_list,
+                force=force,
+                eval_window_days=eval_window_days,
+                min_age_days=min_age_days,
+                limit=limit,
+                auto_analyze=auto_analyze,
+            ):
+                yield sse_event
+                await asyncio.sleep(0)
+        except Exception as exc:
+            logger.error(f"SSE回测失败: {exc}", exc_info=True)
+            yield f"event: error\ndata: {_json.dumps({'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(
