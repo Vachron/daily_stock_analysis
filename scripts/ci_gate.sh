@@ -8,6 +8,11 @@ syntax_check() {
   python -m py_compile src/storage.py src/scheduler.py src/search_service.py
   python -m py_compile src/market_analyzer.py src/stock_analyzer.py
   python -m py_compile data_provider/*.py
+  python -m py_compile src/backtest/*.py
+  python -m py_compile src/backtest/adapters/*.py
+  python -m py_compile src/backtest/strategies/*.py
+  python -m py_compile api/v1/endpoints/backtest.py
+  python -m py_compile api/v1/schemas/backtest.py
 }
 
 flake8_checks() {
