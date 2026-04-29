@@ -447,6 +447,101 @@ class Backtest:
 
         return results, all_iterations
 
+
+class MultiBacktest:
+    """多标的并行回测引擎 (FR-021).
+
+    共享内存优化大数据场景，支持多品种独立回测和结果汇总.
+    """
+
+    def __init__(
+        self,
+        dfs: List[pd.DataFrame],
+        strategy_cls: Type[BacktestStrategy],
+        cash: float = 100000,
+        commission: float = 0.0003,
+        slippage: float = 0.001,
+        stamp_duty: float = 0.001,
+        **kwargs: Any,
+    ) -> None:
+        self._dfs = dfs
+        self._strategy_cls = strategy_cls
+        self._cash = cash
+        self._commission = commission
+        self._slippage = slippage
+        self._stamp_duty = stamp_duty
+        self._kwargs = kwargs
+
+    def run(self, **factor_kwargs: Any) -> pd.DataFrame:
+        """逐个品种执行回测，汇总结果."""
+        rows: List[Dict[str, Any]] = []
+        for df in self._dfs:
+            symbol = getattr(df, "attrs", {}).get("symbol", "")
+            try:
+                bt = Backtest(
+                    df,
+                    self._strategy_cls,
+                    cash=self._cash,
+                    commission=self._commission,
+                    slippage=self._slippage,
+                    stamp_duty=self._stamp_duty,
+                    **self._kwargs,
+                )
+                result = bt.run(**factor_kwargs)
+                row = {
+                    "Symbol": symbol,
+                    "Return [%]": float(result.stats.get("Return [%]", 0)),
+                    "Sharpe Ratio": float(result.stats.get("Sharpe Ratio", 0)),
+                    "Max Drawdown [%]": float(result.stats.get("Max Drawdown [%]", 0)),
+                    "Win Rate [%]": float(result.stats.get("Win Rate [%]", 0)),
+                    "# Trades": int(result.stats.get("# Trades", 0)),
+                    "Profit Factor": float(result.stats.get("Profit Factor", 0)),
+                    "Bars": len(df),
+                }
+                rows.append(row)
+            except Exception as exc:
+                logger.warning("MultiBacktest失败 [%s]: %s", symbol, exc)
+                rows.append({"Symbol": symbol, "Error": str(exc)})
+        return pd.DataFrame(rows)
+
+    def optimize(self, maximize: str = "Sharpe Ratio", method: str = "grid",
+                 max_tries: Optional[int] = None, **factor_ranges: Any) -> pd.DataFrame:
+        """对每个品种执行参数优化，返回各品种最优结果."""
+        rows: List[Dict[str, Any]] = []
+        for df in self._dfs:
+            symbol = getattr(df, "attrs", {}).get("symbol", "")
+            try:
+                bt = Backtest(
+                    df,
+                    self._strategy_cls,
+                    cash=self._cash,
+                    commission=self._commission,
+                    slippage=self._slippage,
+                    stamp_duty=self._stamp_duty,
+                    **self._kwargs,
+                )
+                result_stats = bt.optimize(
+                    maximize=maximize,
+                    method=method,
+                    max_tries=max_tries,
+                    return_heatmap=False,
+                    return_optimization=False,
+                    **factor_ranges,
+                )
+                row = {
+                    "Symbol": symbol,
+                    "Best Value": float(result_stats.get("_best_value", 0)),
+                    "Best Params": result_stats.get("_best_params", {}),
+                    "Return [%]": float(result_stats.get("Return [%]", 0)),
+                    "Sharpe Ratio": float(result_stats.get("Sharpe Ratio", 0)),
+                    "Max Drawdown [%]": float(result_stats.get("Max Drawdown [%]", 0)),
+                }
+                rows.append(row)
+            except Exception as exc:
+                logger.warning("MultiBacktest优化失败 [%s]: %s", symbol, exc)
+                rows.append({"Symbol": symbol, "Error": str(exc)})
+        return pd.DataFrame(rows)
+
     def _bayesian_search(
         self,
         param_names: List[str],

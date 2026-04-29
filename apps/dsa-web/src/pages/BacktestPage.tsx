@@ -35,6 +35,9 @@ import { OptimizeConfigForm } from '../components/backtest/OptimizeConfigForm';
 import { ParamHeatmap } from '../components/backtest/ParamHeatmap';
 import { MonteCarloResult } from '../components/backtest/MonteCarloResult';
 import { BacktestReportExport } from '../components/backtest/BacktestReportExport';
+import { MonthlyHeatmap } from '../components/backtest/MonthlyHeatmap';
+import { DrawdownChart } from '../components/backtest/DrawdownChart';
+import { KlineTradeChart } from '../components/backtest/KlineTradeChart';
 
 interface KlineStats {
   ready: boolean;
@@ -1480,6 +1483,14 @@ const BacktestPage: React.FC = () => {
 
             <V2EquityCurveChart data={v2Result.equityCurve} initialCash={v2Result.initialCash} height={280} />
 
+            <DrawdownChart equityCurve={v2Result.equityCurve} />
+
+            <KlineTradeChart equityCurve={v2Result.equityCurve} trades={v2Result.trades} />
+
+            <MonthlyHeatmap equityCurve={v2Result.equityCurve} />
+
+            <ExitReasonPieChart trades={v2Result.trades || []} />
+
             <div className="grid grid-cols-4 gap-3">
               {[
                 { title: '收益', rows: [['总收益率', v2Result.stats.returnPct, '%'], ['年化收益', v2Result.stats.returnAnnPct, '%'], ['CAGR', v2Result.stats.cagrPct, '%'], ['买入持有', v2Result.stats.buyHoldReturnPct, '%']] },
@@ -1535,7 +1546,6 @@ const BacktestPage: React.FC = () => {
               </div>
             )}
 
-            <ExitReasonPieChart trades={v2Result.trades || []} />
           </div>
         </main>
       )}

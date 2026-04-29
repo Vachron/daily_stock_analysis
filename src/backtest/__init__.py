@@ -30,6 +30,7 @@ from src.backtest.engine import (
     StrategyError,
     BrokerError,
     StatsError,
+    MultiBacktest,
 )
 from src.backtest.exit_rules import ExitRule, ExitReason
 from src.backtest.position_sizing import PositionSizing
@@ -54,6 +55,7 @@ __all__ = [
     "StrategyError",
     "BrokerError",
     "StatsError",
+    "MultiBacktest",
     "BacktestStrategy",
     "Order",
     "Trade",
