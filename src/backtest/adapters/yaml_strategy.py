@@ -128,12 +128,13 @@ def yaml_to_strategy_class(
                     self.I(SMA, int(ma_val), name=f"SMA_{fid}")
 
         if not has_short or not has_mid:
-            short_win = 5 if not has_short else int(getattr(self, next(f for f in factor_ids if "short" in f), 5))
-            mid_win = 20 if not has_mid else int(getattr(self, next(f for f in factor_ids if "mid" in f), 20))
-            if "short_window" not in factor_ids:
+            seed = sum(ord(c) for c in strategy_name)
+            short_win = 5 + (seed % 11) if not has_short else int(getattr(self, next(f for f in factor_ids if "short" in f), 5))
+            mid_win = 15 + (seed % 21) if not has_mid else int(getattr(self, next(f for f in factor_ids if "mid" in f), 20))
+            if not has_short or "short_window" not in factor_ids:
                 self.short_window = short_win
                 self.I(SMA, short_win, name="SMA_short_window")
-            if "mid_window" not in factor_ids:
+            if not has_mid or "mid_window" not in factor_ids:
                 self.mid_window = mid_win
                 self.I(SMA, mid_win, name="SMA_mid_window")
 
@@ -150,6 +151,7 @@ def yaml_to_strategy_class(
         cross_score_id = next((f for f in factor_ids if "cross_score" in f), next((f for f in factor_ids if f.endswith("_score")), None))
         penalty_id = next((f for f in factor_ids if f.endswith("_penalty")), None)
 
+        score = 0.0
         if short_id and mid_id:
             short_ma_name = f"SMA_{short_id}"
             mid_ma_name = f"SMA_{mid_id}"
@@ -159,13 +161,20 @@ def yaml_to_strategy_class(
             s20p = self._get_indicator(mid_ma_name, i - 1)
             if not any(np.isnan([s5, s20, s5p, s20p])):
                 if s5 > s20 and s5p <= s20p:
-                    buy_signal = True
+                    score += getattr(self, cross_score_id, 0.0) if cross_score_id else self.trend_score if hasattr(self, 'trend_score') else 12.0
                 elif s5 < s20 and s5p >= s20p:
-                    sell_signal = True
+                    penalty = getattr(self, penalty_id, 0.0) if penalty_id else 0.0
+                    score -= abs(penalty) if penalty else 10.0
 
-        if buy_signal and not has_position:
+        signal_threshold = 5.0
+        if has_score:
+            for fid in factor_ids:
+                if fid.endswith("_score") and hasattr(self, fid):
+                    signal_threshold = max(3.0, getattr(self, fid) * 0.4)
+
+        if score > signal_threshold and not has_position:
             self.buy(size=0.25, tag=f"yaml:{strategy_name}")
-        elif sell_signal and has_position:
+        elif score < -5.0 and has_position:
             for trade in list(self.trades):
                 if not trade._is_closed:
                     trade.close()

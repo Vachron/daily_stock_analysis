@@ -280,11 +280,11 @@ class _Broker:
         self._cash += revenue - commission - stamp
         self._position.size -= closed_size
 
-        if trade._is_closed:
-            if trade in self._trades:
-                self._trades.remove(trade)
-            self._closed_trades.append(trade)
-        else:
+        if trade in self._trades:
+            self._trades.remove(trade)
+        self._closed_trades.append(trade)
+        
+        if portion < 1.0 and not trade._partial:
             trade.size -= closed_size
 
     def _close_all_trades(self, price: float, bar: int, exit_reason: Any = None) -> None:
