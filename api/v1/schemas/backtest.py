@@ -118,3 +118,42 @@ class EquityCurveResponse(BaseModel):
     engine_version: str
     total_trades: int
     points: List[EquityCurvePoint] = Field(default_factory=list)
+
+
+# ===== v2 策略回测 Schema (FR-001~FR-021) =====
+
+class ExitRuleConfig(BaseModel):
+    trailing_stop_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    stop_loss_pct: Optional[float] = None
+    max_hold_days: Optional[int] = None
+    partial_exit_enabled: bool = False
+    partial_exit_pct: float = 0.5
+    signal_threshold: Optional[float] = None
+    fixed_days: Optional[int] = None
+
+
+class StrategyBacktestRequest(BaseModel):
+    strategy: str = Field(..., description="策略名 (如 ma_golden_cross)")
+    codes: List[str] = Field(default_factory=list, description="股票代码列表")
+    cash: float = Field(100000, ge=10000, description="初始资金")
+    commission: float = Field(0.0003, ge=0, description="佣金率")
+    slippage: float = Field(0.001, ge=0, description="滑点率")
+    stamp_duty: float = Field(0.001, ge=0, description="印花税率")
+    start_date: Optional[str] = Field(None, description="开始日期 YYYY-MM-DD")
+    end_date: Optional[str] = Field(None, description="结束日期 YYYY-MM-DD")
+    factors: Optional[Dict[str, float]] = Field(None, description="因子覆盖")
+    preset: Optional[str] = Field(None, description="参数预设名")
+    exit_rules: Optional[ExitRuleConfig] = Field(None, description="平仓规则")
+
+
+class OptimizeRequest(BaseModel):
+    strategy: str = Field(..., description="策略名")
+    codes: List[str] = Field(default_factory=list)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    maximize: Optional[str] = Field("Sharpe Ratio", description="优化目标指标")
+    method: Optional[str] = Field("grid", description="grid 或 bayesian")
+    factor_ranges: Optional[Dict[str, List[float]]] = Field(None)
+    constraint: Optional[str] = None
+    max_tries: Optional[int] = None

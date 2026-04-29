@@ -10,6 +10,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
+- [新功能] 完整重构回测系统为专业量化回测引擎 v2 (src/backtest/)，包含 Strategy 基类、模拟经纪商、25+ 专业绩效指标(夏普/Sortino/Calmar/Alpha/Beta)、8 种平仓规则(移动止损/止盈/信号消失/固定天数/最大持仓)、参数优化器(网格搜索+贝叶斯)、16 种参数预设(活跃度x市值)、HTML 交互式报告
+- [新功能] YAML 策略到 Strategy 类的自动桥接适配器，21 个 YAML 策略可自动转换为可执行回测策略
+- [新功能] 新增 API 端点: POST /backtest/strategy(策略回测), GET /backtest/strategies(策略列表), GET /backtest/presets(预设列表), POST /backtest/optimize(参数优化)
+- [文档] 新增完整回测系统重构 PRD 文档 (docs/PRD-backtest-optimization.md)，覆盖 18 章节竞品调研、架构设计、功能需求、前后端实现细节、透明度体系
 - [新功能] Web 首页历史报告区新增重新分析入口，支持基于原始 prompt 重做同一只股票同日期的分析
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
 - [新功能] Windows/macOS 桌面端新增 GitHub Release 更新提醒，启动后自动检测新版本并支持从设置页手动检查后跳转下载页

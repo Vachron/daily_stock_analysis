@@ -19,6 +19,7 @@ export interface BacktestCompleted {
   insufficient: number;
   errors: number;
   analyzed: number;
+  submitted_for_analysis?: number;
 }
 
 export interface UseBacktestStreamOptions {
@@ -62,6 +63,16 @@ export function useBacktestStream(
   const [error, setError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const mountedRef = useRef(true);
+  const onProgressRef = useRef(onProgress);
+  const onCompletedRef = useRef(onCompleted);
+  const onErrorRef = useRef(onError);
+  const hasReceivedDataRef = useRef(false);
+
+  useEffect(() => {
+    onProgressRef.current = onProgress;
+    onCompletedRef.current = onCompleted;
+    onErrorRef.current = onError;
+  });
 
   const disconnect = useCallback(() => {
     if (eventSourceRef.current) {
@@ -73,6 +84,7 @@ export function useBacktestStream(
 
   useEffect(() => {
     mountedRef.current = true;
+    hasReceivedDataRef.current = false;
 
     if (!enabled || !params) {
       return;
@@ -90,12 +102,17 @@ export function useBacktestStream(
     es.addEventListener('progress', (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as BacktestProgress;
+        hasReceivedDataRef.current = true;
         if (mountedRef.current) {
           setProgress(data);
           setIsConnected(true);
-          onProgress?.(data);
+          onProgressRef.current?.(data);
         }
       } catch { /* ignore */ }
+    });
+
+    es.addEventListener('heartbeat', () => {
+      hasReceivedDataRef.current = true;
     });
 
     es.addEventListener('completed', (e: MessageEvent) => {
@@ -104,7 +121,7 @@ export function useBacktestStream(
         if (mountedRef.current) {
           setResult(data);
           setIsConnected(false);
-          onCompleted?.(data);
+          onCompletedRef.current?.(data);
         }
       } catch { /* ignore */ }
     });
@@ -112,21 +129,23 @@ export function useBacktestStream(
     es.addEventListener('error', (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data) as { message: string };
-        const msg = data.message || '回测执行失败';
-        if (mountedRef.current) {
-          setError(msg);
-          onError?.(msg);
+        if (data.message && mountedRef.current) {
+          setError(data.message);
+          onErrorRef.current?.(data.message);
         }
       } catch {
-        if (mountedRef.current && !result) {
-          setError('回测连接失败');
-          onError?.('回测连接失败');
-        }
+        // Server-initiated error event without parseable JSON — ignore, let onerror handle
       }
       setIsConnected(false);
     });
 
     es.onerror = () => {
+      // EventSource onerror fires on ANY connection close — including clean close
+      // after a completed event. Only treat as error if we never received data.
+      if (!hasReceivedDataRef.current && mountedRef.current) {
+        setError('回测连接失败');
+        onErrorRef.current?.('回测连接失败');
+      }
       setIsConnected(false);
     };
 
@@ -135,7 +154,7 @@ export function useBacktestStream(
       es.close();
       eventSourceRef.current = null;
     };
-  }, [enabled, params, onProgress, onCompleted, onError]);
+  }, [enabled, params]);
 
   return { isConnected, progress, result, error, disconnect };
 }

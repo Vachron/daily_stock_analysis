@@ -291,42 +291,29 @@ class BacktestService:
         analyzed_count = 0
 
         if auto_analyze and len(candidates) == 0 and effective_codes:
-            effective_code_list = effective_codes
-            codes_to_analyze = self._filter_codes_without_history(effective_code_list)
-            if codes_to_analyze:
-                yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'正在自动分析 {len(codes_to_analyze)} 只股票, 获取数据并运行AI分析...', 'progressPct': 10, 'codes': codes_to_analyze[:10]})}\n\n"
+            codes_without_history = self._filter_codes_without_history(effective_codes)
+            if codes_without_history:
+                count = len(codes_without_history)
+                yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'{count} 只缺少分析记录, 提交后台分析中...', 'progressPct': 10, 'codes': codes_without_history[:10]})}\n\n"
 
-                for i, ac in enumerate(codes_to_analyze):
-                    pct = 10 + int((i / max(len(codes_to_analyze), 1)) * 40)
-                    yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'分析中: {ac} ({i+1}/{len(codes_to_analyze)})', 'progressPct': pct, 'code': ac, 'codeIndex': i+1, 'codeTotal': len(codes_to_analyze)})}\n\n"
-                    try:
-                        import uuid
-                        from src.services.analysis_service import AnalysisService
-                        service = AnalysisService()
-                        query_id = uuid.uuid4().hex
-                        result = service.analyze_stock(
-                            stock_code=ac,
-                            report_type=None,
-                            force_refresh=False,
-                            query_id=query_id,
-                            send_notification=False,
-                        )
-                        if result is not None:
-                            analyzed_count += 1
-                    except Exception as exc:
-                        logger.error("Auto-analysis error for %s: %s", ac, exc)
+                self._analyze_codes_background(codes_without_history)
 
-                yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'自动分析完成: {analyzed_count}/{len(codes_to_analyze)} 只成功', 'progressPct': 50})}\n\n"
+                yield f"event: progress\ndata: {_json.dumps({'stage': 'analyzing', 'message': f'已提交 {count} 只到后台分析 (4线程并行, 每只约60秒)', 'progressPct': 100})}\n\n"
+                yield f"event: completed\ndata: {_json.dumps({'processed': 0, 'saved': 0, 'completed': 0, 'insufficient': 0, 'errors': 0, 'analyzed': 0, 'submitted_for_analysis': count})}\n\n"
+                return
 
-                candidates = self.repo.get_candidates(
-                    code=effective_code,
-                    codes=effective_codes,
-                    min_age_days=0,
-                    limit=int(limit),
-                    eval_window_days=int(eval_window_days),
-                    engine_version=str(engine_version),
-                    force=True,
-                )
+            # Stocks have history records but are filtered by min_age_days — retry with relaxed constraint
+            candidates = self.repo.get_candidates(
+                code=effective_code,
+                codes=effective_codes,
+                min_age_days=0,
+                limit=int(limit),
+                eval_window_days=int(eval_window_days),
+                engine_version=str(engine_version),
+                force=force,
+            )
+
+        analyzed_count = 0
 
         if not candidates:
             yield f"event: error\ndata: {_json.dumps({'message': '未找到可回测的分析记录。请先在首页对股票执行分析。'})}\n\n"
@@ -586,6 +573,36 @@ class BacktestService:
         except Exception as exc:
             logger.warning("Failed to check analysis history: %s", exc)
             return codes
+
+    def _analyze_codes_background(self, codes: List[str]) -> None:
+        """Submit codes for background analysis via thread pool. Returns immediately."""
+        import concurrent.futures
+        import uuid as _uuid
+        from src.services.analysis_service import AnalysisService
+
+        def _run_one(code):
+            try:
+                svc = AnalysisService()
+                qid = _uuid.uuid4().hex
+                result = svc.analyze_stock(
+                    stock_code=code,
+                    report_type=None,
+                    force_refresh=False,
+                    query_id=qid,
+                    send_notification=False,
+                )
+                if result is not None:
+                    logger.info("Background analysis OK: %s", code)
+                else:
+                    logger.warning("Background analysis returned None: %s", code)
+            except Exception as exc:
+                logger.error("Background analysis error for %s: %s", code, exc)
+
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=4)
+        for code in codes:
+            executor.submit(_run_one, code)
+        executor.shutdown(wait=False)
+        logger.info("Submitted %d stocks for background analysis", len(codes))
 
     def _analyze_codes(self, codes: List[str]) -> int:
         """Run analysis pipeline on each code. Returns count of successfully analyzed codes."""

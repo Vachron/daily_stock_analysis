@@ -496,3 +496,281 @@ def run_portfolio_backtest(
             status_code=500,
             detail={"error": "internal_error", "message": str(exc)},
         )
+
+
+# ===== v2 策略回测端点 (FR-001~FR-021) =====
+
+@router.post(
+    "/strategy",
+    summary="运行策略回测 (v2 引擎)",
+    description="基于 YAML 策略和 K 线数据运行专业策略回测, 返回 25+ 绩效指标",
+)
+async def run_strategy_backtest(
+    request: "StrategyBacktestRequest",
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    try:
+        from src.backtest.adapters.yaml_strategy import yaml_to_strategy_class
+        from src.backtest.engine import Backtest
+        from src.backtest.exit_rules import ExitRule
+        from src.backtest.presets import BacktestPresets
+        from data_provider.kline_repo import KlineRepo, ORIGIN_DATE
+        import pandas as pd
+        from datetime import timedelta
+
+        kline_repo = KlineRepo()
+        dfs = []
+        for code in (request.codes or []):
+            df = kline_repo.get_history(code)
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    "open": "Open", "high": "High", "low": "Low",
+                    "close": "Close", "volume": "Volume",
+                })
+                if "date" in df.columns:
+                    df["Date"] = pd.to_datetime(df["date"].apply(
+                        lambda d: ORIGIN_DATE + timedelta(days=int(d))
+                    ))
+                    df = df.set_index("Date")
+                df.attrs["symbol"] = code
+                dfs.append(df)
+
+        if not dfs:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "data_not_found", "message": "未找到指定股票的K线数据"},
+            )
+
+        data_df = dfs[0]
+        if request.start_date:
+            data_df = data_df[data_df.index >= request.start_date]
+        if request.end_date:
+            data_df = data_df[data_df.index <= request.end_date]
+
+        if len(data_df) < 50:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "insufficient_data", "message": "K线数据不足(需至少50条)"},
+            )
+
+        exit_rule = None
+        if request.exit_rules:
+            er = request.exit_rules
+            exit_rule = ExitRule(
+                trailing_stop_pct=er.trailing_stop_pct,
+                take_profit_pct=er.take_profit_pct,
+                stop_loss_pct=er.stop_loss_pct,
+                max_hold_days=er.max_hold_days,
+                partial_exit_pct=er.partial_exit_pct if er.partial_exit_enabled else 1.0,
+            )
+
+        strategy_cls = yaml_to_strategy_class(request.strategy)
+        bt = Backtest(
+            data_df,
+            strategy_cls,
+            cash=request.cash,
+            commission=request.commission,
+            slippage=request.slippage,
+            stamp_duty=request.stamp_duty,
+        )
+
+        factors = request.factors or {}
+        result = bt.run(**factors)
+
+        response = {
+            "result_id": f"bt2_{request.strategy}_{request.codes[0] if request.codes else ''}",
+            "strategy_name": result.strategy_name,
+            "symbol": result.symbol or (request.codes[0] if request.codes else ""),
+            "start_date": str(result.start_date) if result.start_date else None,
+            "end_date": str(result.end_date) if result.end_date else None,
+            "initial_cash": result.initial_cash,
+            "stats": result.to_json().get("stats", {}),
+            "trades": result.to_json().get("trades", []),
+            "equity_curve": result.to_json().get("equity_curve", []),
+            "engine_version": result.engine_version,
+            "preset_name": request.preset,
+            "elapsed_seconds": result._meta.get("elapsed_seconds", 0),
+        }
+        return response
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"策略回测失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"策略回测失败: {str(exc)}"},
+        )
+
+
+@router.get(
+    "/strategies",
+    summary="获取可用策略列表",
+    description="扫描 strategies/*.yaml 返回所有 YAML 策略的元信息和因子定义",
+)
+async def list_strategies():
+    try:
+        from src.backtest.adapters.yaml_strategy import list_yaml_strategies
+        strategies = list_yaml_strategies()
+        return {"total": len(strategies), "items": strategies}
+    except Exception as exc:
+        logger.error(f"获取策略列表失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(exc)},
+        )
+
+
+@router.get(
+    "/presets",
+    summary="获取参数预设列表",
+    description="获取 16 种 (活跃度 x 市值) 参数预设组合",
+)
+async def list_presets():
+    try:
+        from src.backtest.presets import BacktestPresets
+        presets = BacktestPresets.all()
+        return {
+            "total": len(presets),
+            "items": [
+                {
+                    "name": p.name,
+                    "display_name": p.display_name,
+                    "activity_level": p.activity_level.value,
+                    "cap_size": p.cap_size.value,
+                    "threshold": p.threshold,
+                    "trailing_stop_pct": p.trailing_stop_pct,
+                    "take_profit_pct": p.take_profit_pct,
+                    "stop_loss_pct": p.stop_loss_pct,
+                    "max_hold_days": p.max_hold_days,
+                    "position_sizing": p.position_sizing,
+                    "fee_rate": p.fee_rate,
+                }
+                for p in presets
+            ],
+        }
+    except Exception as exc:
+        logger.error(f"获取预设列表失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(exc)},
+        )
+
+
+@router.get(
+    "/presets/{stock_code}",
+    summary="根据股票代码匹配参数预设",
+    description="根据股票活跃度和市值自动匹配最合适的参数预设",
+)
+async def get_preset_for_stock(stock_code: str):
+    try:
+        from src.backtest.presets import BacktestPresets
+        preset = BacktestPresets.from_stock(stock_code)
+        return {
+            "name": preset.name,
+            "display_name": preset.display_name,
+            "activity_level": preset.activity_level.value,
+            "cap_size": preset.cap_size.value,
+            "threshold": preset.threshold,
+            "trailing_stop_pct": preset.trailing_stop_pct,
+            "take_profit_pct": preset.take_profit_pct,
+            "stop_loss_pct": preset.stop_loss_pct,
+            "max_hold_days": preset.max_hold_days,
+            "position_sizing": preset.position_sizing,
+            "fee_rate": preset.fee_rate,
+        }
+    except Exception as exc:
+        logger.error(f"匹配预设失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": str(exc)},
+        )
+
+
+@router.post(
+    "/optimize",
+    summary="运行参数优化",
+    description="对策略参数进行网格搜索或贝叶斯优化",
+)
+async def run_optimization(
+    request: "OptimizeRequest",
+    db_manager: DatabaseManager = Depends(get_database_manager),
+):
+    try:
+        from src.backtest.adapters.yaml_strategy import yaml_to_strategy_class
+        from src.backtest.engine import Backtest
+        from src.backtest.optimizer import optimize
+        from data_provider.kline_repo import KlineRepo, ORIGIN_DATE
+        import pandas as pd
+        from datetime import timedelta
+
+        kline_repo = KlineRepo()
+        dfs = []
+        for code in (request.codes or []):
+            df = kline_repo.get_history(code)
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    "open": "Open", "high": "High", "low": "Low",
+                    "close": "Close", "volume": "Volume",
+                })
+                if "date" in df.columns:
+                    df["Date"] = pd.to_datetime(df["date"].apply(
+                        lambda d: ORIGIN_DATE + timedelta(days=int(d))
+                    ))
+                    df = df.set_index("Date")
+                dfs.append(df)
+
+        if not dfs:
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "data_not_found", "message": "未找到K线数据"},
+            )
+
+        data_df = dfs[0]
+        if request.start_date:
+            data_df = data_df[data_df.index >= request.start_date]
+        if request.end_date:
+            data_df = data_df[data_df.index <= request.end_date]
+
+        strategy_cls = yaml_to_strategy_class(request.strategy)
+        bt = Backtest(data_df, strategy_cls)
+
+        factor_ranges = request.factor_ranges or {}
+        optimize_kwargs = {}
+        for k, v in factor_ranges.items():
+            if len(v) >= 2:
+                optimize_kwargs[k] = range(int(v[0]), int(v[-1]) + 1, max(1, (int(v[-1]) - int(v[0])) // max(1, len(v) - 1)))
+            elif len(v) == 1:
+                optimize_kwargs[k] = v
+
+        result_stats = optimize(
+            bt,
+            maximize=request.maximize or "Sharpe Ratio",
+            method=request.method or "grid",
+            max_tries=request.max_tries,
+            return_heatmap=True,
+            return_optimization=True,
+            **optimize_kwargs,
+        )
+
+        best_params = result_stats.get("_best_params", {})
+        best_value = result_stats.get("_best_value", 0)
+        heatmap = result_stats.get("_heatmap", {})
+        history = result_stats.get("_optimization_history", [])
+
+        return {
+            "status": "completed",
+            "best_params": best_params,
+            "best_value": best_value,
+            "best_stats": {k: v for k, v in result_stats.items() if not k.startswith("_")},
+            "heatmap": heatmap,
+            "total_trials": len(history),
+            "elapsed_seconds": 0,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"参数优化失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"参数优化失败: {str(exc)}"},
+        )

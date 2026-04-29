@@ -3,7 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Play, RotateCcw, ChevronDown, ChevronUp, TrendingUp, TrendingDown,
-  Activity, Target, Zap, Shield, BarChart3, X, Database,
+  Activity, Target, Zap, Shield, BarChart3, X, Database, Loader2,
 } from 'lucide-react';
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid,
@@ -530,6 +530,17 @@ const BacktestPage: React.FC = () => {
   }, [fetchResults, fetchPerformance, fetchEquityCurve]);
 
   const handleStreamCompleted = useCallback((data: BacktestCompleted) => {
+    if ((data.submitted_for_analysis ?? 0) > 0) {
+      setRunResult({
+        processed: 0, saved: 0, completed: 0, insufficient: 0, errors: 0, analyzed: data.submitted_for_analysis,
+      } as unknown as BacktestRunResponse);
+      setWizardStep('results');
+      setCompletedSteps(['config', 'running']);
+      setIsRunning(false);
+      setStreamParams(null);
+      return;
+    }
+
     setRunResult({
       processed: data.processed,
       saved: data.saved,
@@ -929,7 +940,22 @@ const BacktestPage: React.FC = () => {
                 <EquityCurveChart data={equityCurve} isLoading={false} />
               </Card>
 
-              {results.length === 0 ? (
+              {results.length === 0 && (runResult?.analyzed ?? 0) > 0 && (runResult?.completed ?? 0) === 0 ? (
+                <Card variant="gradient" padding="md">
+                  <div className="flex items-center gap-3">
+                    <div className="h-10 w-10 rounded-full bg-cyan/10 flex items-center justify-center">
+                      <Loader2 className="h-5 w-5 text-cyan animate-spin" />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-foreground">后台分析进行中</div>
+                      <div className="text-xs text-secondary-text mt-0.5">
+                        已提交 {runResult?.analyzed} 只股票到后台 AI 分析队列（4 线程并行，每只约 60 秒）。
+                        分析完成后点击「重新开始」即可直接进入回测评估。
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              ) : results.length === 0 ? (
                 <EmptyState
                   title={runResult != null ? "回测无结果" : "暂无回测结果"}
                   description={runResult != null
