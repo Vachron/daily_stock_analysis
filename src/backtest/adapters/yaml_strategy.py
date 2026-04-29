@@ -99,6 +99,13 @@ def yaml_to_strategy_class(
     factor_defaults = {f["id"]: f["default"] for f in factors}
     factor_types = {f["id"]: f.get("type", "float") for f in factors}
 
+    has_short = any("short" in fid for fid in factor_ids)
+    has_mid = any("mid" in fid for fid in factor_ids)
+    has_long = any("long" in fid for fid in factor_ids)
+    has_score = any(fid.endswith("_score") for fid in factor_ids)
+    has_penalty = any(fid.endswith("_penalty") for fid in factor_ids)
+    has_cross_score = any("cross_score" in fid for fid in factor_ids)
+
     def _make_init(self, **kwargs):
         super(type(self), self).__init__()
         for fid in factor_ids:
@@ -110,61 +117,54 @@ def yaml_to_strategy_class(
             setattr(self, fid, val)
         self._category = category
         self._display_name = display_name
-        self._ma_values: Dict[str, np.ndarray] = {}
+        self._implicit_windows = not (has_short and has_mid)
 
     def _make_init_method(self):
         """根据 YAML factors 注册指标."""
-        close_series = self.data.Close
-
-        has_close_above_ma = False
         for fid in factor_ids:
             if fid.endswith("_window"):
                 ma_val = getattr(self, fid, 20)
                 if isinstance(ma_val, (int, float)) and ma_val > 0:
-                    arr = self.I(SMA, self.data.Close, int(ma_val), name=f"SMA_{fid}")
-                    self._ma_values[fid] = arr
+                    self.I(SMA, int(ma_val), name=f"SMA_{fid}")
 
-        for fid in factor_ids:
-            if fid.endswith("_cross_score"):
-                pass
-            elif fid.endswith("_score"):
-                pass
-            elif fid.endswith("_penalty"):
-                pass
+        if not has_short or not has_mid:
+            short_win = 5 if not has_short else int(getattr(self, next(f for f in factor_ids if "short" in f), 5))
+            mid_win = 20 if not has_mid else int(getattr(self, next(f for f in factor_ids if "mid" in f), 20))
+            if "short_window" not in factor_ids:
+                self.short_window = short_win
+                self.I(SMA, short_win, name="SMA_short_window")
+            if "mid_window" not in factor_ids:
+                self.mid_window = mid_win
+                self.I(SMA, mid_win, name="SMA_mid_window")
 
     def _make_next(self, i):
         """根据 YAML instructions 的评分规则执行交易逻辑."""
         has_position = any(not t._is_closed for t in self.trades)
 
-        score = 0.0
         buy_signal = False
         sell_signal = False
 
-        short_id = None
-        mid_id = None
-        long_id = None
-        for fid in factor_ids:
-            if "short" in fid or fid.endswith("_cross_score"):
-                short_id = fid if "short" in fid else short_id
-            if "mid" in fid:
-                mid_id = fid
-            if "long" in fid:
-                long_id = fid
+        short_id = next((f for f in factor_ids if "short" in f), "short_window" if hasattr(self, "short_window") else None)
+        mid_id = next((f for f in factor_ids if "mid" in f), "mid_window" if hasattr(self, "mid_window") else None)
 
-        if short_id and mid_id and short_id in self._ma_values and mid_id in self._ma_values:
-            short_ma = self._ma_values[short_id]
-            mid_ma = self._ma_values[mid_id]
-            if i > 0 and i < len(short_ma) and i < len(mid_ma):
-                if not np.isnan(short_ma[i]) and not np.isnan(mid_ma[i]):
-                    if short_ma[i] > mid_ma[i] and short_ma[i - 1] <= mid_ma[i - 1]:
-                        score += getattr(self, next((f for f in factor_ids if "cross_score" in f), ""), 0) or 12.0
-                        buy_signal = True
-                    elif short_ma[i] < mid_ma[i] and short_ma[i - 1] >= mid_ma[i - 1]:
-                        score += getattr(self, next((f for f in factor_ids if "penalty" in f), ""), 0) or -10.0
-                        sell_signal = True
+        cross_score_id = next((f for f in factor_ids if "cross_score" in f), next((f for f in factor_ids if f.endswith("_score")), None))
+        penalty_id = next((f for f in factor_ids if f.endswith("_penalty")), None)
+
+        if short_id and mid_id:
+            short_ma_name = f"SMA_{short_id}"
+            mid_ma_name = f"SMA_{mid_id}"
+            s5 = self._get_indicator(short_ma_name, i)
+            s20 = self._get_indicator(mid_ma_name, i)
+            s5p = self._get_indicator(short_ma_name, i - 1)
+            s20p = self._get_indicator(mid_ma_name, i - 1)
+            if not any(np.isnan([s5, s20, s5p, s20p])):
+                if s5 > s20 and s5p <= s20p:
+                    buy_signal = True
+                elif s5 < s20 and s5p >= s20p:
+                    sell_signal = True
 
         if buy_signal and not has_position:
-            self.buy(tag="yaml_strategy")
+            self.buy(tag=f"yaml:{strategy_name}")
         elif sell_signal and has_position:
             for trade in list(self.trades):
                 if not trade._is_closed:

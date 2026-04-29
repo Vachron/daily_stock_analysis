@@ -129,6 +129,8 @@ class BacktestStrategy(ABC):
             except Exception:
                 self._indicator_values[ind.name] = np.full(len(close), np.nan)
                 setattr(self, ind.name, self._indicator_values[ind.name])
+            if ind.name.lower() != ind.name:
+                setattr(self, ind.name.lower(), self._indicator_values[ind.name])
 
     def _get_indicator(self, name: str, i: int) -> float:
         """获取指标在指定索引处的值."""
