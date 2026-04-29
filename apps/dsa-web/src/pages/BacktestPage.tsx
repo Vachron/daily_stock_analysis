@@ -38,6 +38,12 @@ import { BacktestReportExport } from '../components/backtest/BacktestReportExpor
 import { MonthlyHeatmap } from '../components/backtest/MonthlyHeatmap';
 import { DrawdownChart } from '../components/backtest/DrawdownChart';
 import { KlineTradeChart } from '../components/backtest/KlineTradeChart';
+import { TradeTimeline } from '../components/backtest/TradeTimeline';
+import { SignalFunnel } from '../components/backtest/SignalFunnel';
+import { ParamSensitivityHeatmap } from '../components/backtest/ParamSensitivityHeatmap';
+import { ParamChangeHistory, useParamChangeHistory } from '../components/backtest/ParamChangeHistory';
+import { AISummaryCard } from '../components/backtest/AISummaryCard';
+import { ProgressOverlay } from '../components/backtest/ProgressOverlay';
 
 interface KlineStats {
   ready: boolean;
@@ -450,6 +456,7 @@ const BacktestPage: React.FC = () => {
   const { run: runOpt, result: optResult, loading: optLoading, error: optError, reset: resetOpt } = useBacktestOptimize();
   const { run: runMC, result: mcResult, loading: mcLoading, error: mcError, reset: resetMC } = useMonteCarlo();
   const [mcN, setMCN] = useState(1000);
+  const { history: paramHistory } = useParamChangeHistory();
 
   const exportV2Report = async () => {
       if (!v2Result) return;
@@ -1247,12 +1254,10 @@ const BacktestPage: React.FC = () => {
       )}
 
       {backtestMode === 'v2' && wizardStep === 'running' && (
-        <main className="flex-1 overflow-y-auto flex items-center justify-center">
-          <div className="text-center space-y-3">
-            <div className="backtest-spinner lg" />
-            <p className="text-sm text-secondary-text">正在执行 {selectedStrategy?.displayName || v2Strategy} 策略回测...</p>
-            <p className="text-xs text-muted-text">这可能需要数秒，请耐心等待</p>
-          </div>
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <ProgressOverlay visible={true} stage="evaluating" progressPct={50} message={`正在对 ${selectedCodes.length} 只股票执行 ${selectedStrategy?.displayName || v2Strategy}...`}>
+            <div className="h-20" />
+          </ProgressOverlay>
         </main>
       )}
 
@@ -1339,6 +1344,28 @@ const BacktestPage: React.FC = () => {
             </div>
 
             <ParamHeatmap heatmap={optResult.heatmap} />
+
+            {optResult.heatmap?.data ? (
+              <ParamSensitivityHeatmap
+                data={(() => {
+                  const hm = optResult.heatmap as { data: Record<number, Record<number, number>>; x_param: string; y_param: string };
+                  const xVals = Object.keys(hm.data).map(Number);
+                  const yKeys = [...new Set(xVals.flatMap((x) => Object.keys(hm.data[x] || {}).map(Number)))];
+                  const allVals = xVals.flatMap((x) => yKeys.map((y) => hm.data[x]?.[y] ?? 0)).filter((v: number) => v !== 0);
+                  const maxAbs = Math.max(1, Math.abs(Math.max(...allVals)), Math.abs(Math.min(...allVals)));
+                  const cells: Array<{ metric: string; paramName: string; score: number }> = xVals.flatMap((x) =>
+                    yKeys.map((y) => ({
+                      metric: y.toFixed(1),
+                      paramName: String(hm.x_param),
+                      score: Math.abs((hm.data[x]?.[y] ?? 0) / maxAbs),
+                    }))
+                  ) as Array<{ metric: string; paramName: string; score: number }>;
+                  return cells;
+                })()}
+                params={[String((optResult.heatmap as Record<string, unknown>).x_param || optResult.heatmap?.x_param || (Object.keys(optResult.bestParams))[0] || 'param')]}
+                metrics={Object.keys(optResult.bestParams).length > 0 ? (Object.keys(optResult.bestParams) as string[]) : ['return', 'sharpe']}
+              />
+            ) : null}
 
             <div className="rounded-xl bg-card/30 border border-border/20 p-3">
               <h3 className="text-[10px] font-medium text-cyan mb-2">优化后策略回测详情</h3>
@@ -1467,6 +1494,10 @@ const BacktestPage: React.FC = () => {
               </div>
             </div>
 
+            <AISummaryCard stats={v2Result.stats as unknown as Record<string, number>} strategyName={v2Result.strategyName} symbol={v2Result.symbol} />
+
+            <ParamChangeHistory history={paramHistory} onSelect={() => {}} />
+
             <div className="grid grid-cols-4 gap-2">
               {[
                 { label: '累计收益', value: `${(v2Result.stats.returnPct ?? 0) >= 0 ? '+' : ''}${(v2Result.stats.returnPct ?? 0).toFixed(2)}%`, tone: (v2Result.stats.returnPct ?? 0) >= 0 ? 'text-success' : 'text-danger' as const },
@@ -1490,6 +1521,10 @@ const BacktestPage: React.FC = () => {
             <MonthlyHeatmap equityCurve={v2Result.equityCurve} />
 
             <ExitReasonPieChart trades={v2Result.trades || []} />
+
+            <SignalFunnel stats={v2Result.stats as unknown as Record<string, number>} exitRules={v2ExitRules} />
+
+            <TradeTimeline trades={v2Result.trades || []} maxItems={5} />
 
             <div className="grid grid-cols-4 gap-3">
               {[
