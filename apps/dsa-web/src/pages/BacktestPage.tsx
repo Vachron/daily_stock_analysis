@@ -507,7 +507,7 @@ const BacktestPage: React.FC = () => {
     if (!v2Strategy || selectedCodes.length === 0) return;
     setWizardStep('running');
     setCompletedSteps((prev) => prev.includes('config') ? prev : [...prev, 'config']);
-    await runV2({
+    const result = await runV2({
       strategy: v2Strategy,
       codes: selectedCodes,
       cash: v2Cash,
@@ -519,12 +519,16 @@ const BacktestPage: React.FC = () => {
       preset: v2Preset ?? undefined,
       exitRules: Object.keys(v2ExitRules).length > 0 ? v2ExitRules : undefined,
     });
-    setWizardStep('results');
-    setCompletedSteps((prev) => {
-      const next = new Set(prev);
-      next.add('running');
-      return [...next] as WizardStep[];
-    });
+    if (result) {
+      setWizardStep('results');
+      setCompletedSteps((prev) => {
+        const next = new Set(prev);
+        next.add('running');
+        return [...next] as WizardStep[];
+      });
+    } else {
+      setWizardStep('config');
+    }
   };
 
   const checkKlineStats = useCallback(async () => {
@@ -1254,10 +1258,32 @@ const BacktestPage: React.FC = () => {
       )}
 
       {backtestMode === 'v2' && wizardStep === 'running' && (
-        <main className="flex-1 overflow-y-auto px-4 py-3">
-          <ProgressOverlay visible={true} stage="evaluating" progressPct={50} message={`正在对 ${selectedCodes.length} 只股票执行 ${selectedStrategy?.displayName || v2Strategy}...`}>
-            <div className="h-20" />
-          </ProgressOverlay>
+        <main className="flex-1 flex items-center justify-center overflow-y-auto px-4 py-6">
+          <div className="flex flex-col items-center gap-4 animate-fade-in max-w-sm w-full">
+            <div className="backtest-spinner lg" />
+            <div className="text-center space-y-2">
+              <p className="text-sm font-medium text-foreground">
+                正在执行策略回测...
+              </p>
+              <p className="text-xs text-muted-text">
+                策略: {selectedStrategy?.displayName || v2Strategy} · {selectedCodes.length} 只股票
+              </p>
+              <ProgressOverlay visible={false}>
+                <div className="h-0" />
+              </ProgressOverlay>
+            </div>
+            <div className="w-full h-1.5 rounded-full bg-border/10 overflow-hidden">
+              <div className="h-full rounded-full bg-gradient-to-r from-cyan to-cyan/60 animate-pulse" style={{ width: '60%' }} />
+            </div>
+            <p className="text-[10px] text-muted-text/60">
+              系统正在处理您的请求。您将看到完整的进度信息——任何等待超过 500ms 的操作都会展示状态。
+            </p>
+            {v2Error && (
+              <div className="px-4 py-2.5 rounded-xl bg-danger/10 border border-danger/30 text-xs text-danger w-full text-center">
+                {v2Error}
+              </div>
+            )}
+          </div>
         </main>
       )}
 

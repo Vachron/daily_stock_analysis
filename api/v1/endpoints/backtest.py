@@ -18,6 +18,10 @@ from api.v1.schemas.backtest import (
     BacktestResultsResponse,
     EquityCurveResponse,
     PerformanceMetrics,
+    StrategyBacktestRequest,
+    OptimizeRequest,
+    MontecarloRequest,
+    ExitRuleConfig,
 )
 from api.v1.schemas.common import ErrorResponse
 from src.services.backtest_service import BacktestService
@@ -500,6 +504,72 @@ def run_portfolio_backtest(
 
 # ===== v2 策略回测端点 (FR-001~FR-021) =====
 
+def _normalize_stats(stats: dict) -> dict:
+    """将 backtesting.py 格式的 stats 键名转为 camelCase 兼容的 snake_case."""
+    mapping = {
+        "Start": "start_date",
+        "End": "end_date",
+        "Duration": "duration",
+        "Exposure Time [%]": "exposure_time_pct",
+        "Equity Final [$]": "equity_final",
+        "Equity Peak [$]": "equity_peak",
+        "Return [%]": "return_pct",
+        "Buy & Hold Return [%]": "buy_hold_return_pct",
+        "Return (Ann.) [%]": "return_ann_pct",
+        "Volatility (Ann.) [%]": "volatility_ann_pct",
+        "CAGR [%]": "cagr_pct",
+        "Sharpe Ratio": "sharpe_ratio",
+        "Sortino Ratio": "sortino_ratio",
+        "Calmar Ratio": "calmar_ratio",
+        "Max. Drawdown [%]": "max_drawdown_pct",
+        "Max Drawdown [%]": "max_drawdown_pct",
+        "Avg. Drawdown [%]": "avg_drawdown_pct",
+        "Avg Drawdown [%]": "avg_drawdown_pct",
+        "Max. Drawdown Duration": "max_dd_duration",
+        "Max Drawdown Duration": "max_dd_duration",
+        "Avg. Drawdown Duration": "avg_dd_duration",
+        "Avg Drawdown Duration": "avg_dd_duration",
+        "# Trades": "trade_count",
+        "Win Rate [%]": "win_rate_pct",
+        "Best Trade [%]": "best_trade_pct",
+        "Worst Trade [%]": "worst_trade_pct",
+        "Avg. Trade [%]": "avg_trade_pct",
+        "Max. Trade Duration": "max_trade_duration",
+        "Avg. Trade Duration": "avg_trade_duration",
+        "Profit Factor": "profit_factor",
+        "Expectancy [%]": "expectancy_pct",
+        "SQN": "sqn",
+        "Kelly Criterion": "kelly_criterion",
+        "_strategy": "_strategy",
+        "_equity_curve": "_equity_curve",
+        "_trades": "_trades",
+    }
+    result = {}
+    for key, value in stats.items():
+        normalized_key = mapping.get(key, key)
+        result[normalized_key] = value
+    return result
+
+
+def _normalize_trades(trades: list) -> list:
+    """将 trades DataFrame 的首字母大写键名转为 camelCase."""
+    rename = {
+        "Size": "size", "EntryBar": "entryBar", "ExitBar": "exitBar",
+        "EntryPrice": "entryPrice", "ExitPrice": "exitPrice",
+        "SL": "sl", "TP": "tp", "PnL": "pnl", "ReturnPct": "returnPct",
+        "EntryTime": "entryTime", "ExitTime": "exitTime",
+        "Duration": "duration", "Tag": "tag", "ExitReason": "exitReason",
+        "PositionPct": "positionPct",
+    }
+    out = []
+    for t in trades:
+        nt = {}
+        for k, v in t.items():
+            nt[rename.get(k, k)] = v
+        out.append(nt)
+    return out
+
+
 @router.post(
     "/strategy",
     summary="运行策略回测 (v2 引擎)",
@@ -584,8 +654,8 @@ async def run_strategy_backtest(
             "start_date": str(result.start_date) if result.start_date else None,
             "end_date": str(result.end_date) if result.end_date else None,
             "initial_cash": result.initial_cash,
-            "stats": result.to_json().get("stats", {}),
-            "trades": result.to_json().get("trades", []),
+            "stats": _normalize_stats(result.stats),
+            "trades": _normalize_trades(result.to_json().get("trades", [])),
             "equity_curve": result.to_json().get("equity_curve", []),
             "engine_version": result.engine_version,
             "preset_name": request.preset,
