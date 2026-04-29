@@ -7,6 +7,9 @@ import logging
 from datetime import date
 from typing import Optional
 
+import numpy as np
+import pandas as pd
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
@@ -547,7 +550,17 @@ def _normalize_stats(stats: dict) -> dict:
     result = {}
     for key, value in stats.items():
         normalized_key = mapping.get(key, key)
-        result[normalized_key] = value
+        try:
+            if value is None or isinstance(value, (int, float, np.integer, np.floating)):
+                result[normalized_key] = None if value is None else float(value)
+            elif isinstance(value, complex):
+                result[normalized_key] = None
+            elif isinstance(value, (pd.Timestamp,)):
+                result[normalized_key] = str(value)
+            else:
+                result[normalized_key] = str(value)
+        except Exception:
+            result[normalized_key] = None
     return result
 
 
@@ -642,6 +655,7 @@ async def run_strategy_backtest(
             commission=request.commission,
             slippage=request.slippage,
             stamp_duty=request.stamp_duty,
+            exit_rule=exit_rule,
         )
 
         factors = request.factors or {}

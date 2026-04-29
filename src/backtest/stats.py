@@ -14,6 +14,21 @@ import numpy as np
 import pandas as pd
 
 
+def safe_round(val: Any, ndigits: int = 2) -> Optional[float]:
+    try:
+        if val is None or isinstance(val, complex):
+            return None
+        return round(float(val), ndigits)
+    except Exception:
+        return None
+
+def safe_round_int(val: Any) -> int:
+    try:
+        return int(round(float(val)))
+    except Exception:
+        return 0
+
+
 def compute_stats(
     trades: List[Any],
     equity_curve: np.ndarray,
@@ -211,38 +226,38 @@ def compute_stats(
         "Start": start_date,
         "End": end_date,
         "Duration": duration_days,
-        "Exposure Time [%]": round(exposure_time_pct, 2),
-        "Return [%]": round(return_pct, 2),
-        "Return (Ann.) [%]": round(return_ann_pct, 2),
-        "CAGR [%]": round(cagr_pct, 2),
-        "Buy & Hold Return [%]": round(buy_hold_return_pct, 2),
-        "Volatility (Ann.) [%]": round(volatility_ann_pct, 2),
-        "Max Drawdown [%]": round(max_drawdown_pct, 2),
-        "Avg Drawdown [%]": round(avg_drawdown_pct, 2),
-        "Max Drawdown Duration": max_dd_duration,
-        "Avg Drawdown Duration": round(avg_dd_duration, 1),
-        "Sharpe Ratio": round(sharpe_ratio, 2),
-        "Sortino Ratio": round(sortino_ratio, 2),
-        "Calmar Ratio": round(calmar_ratio, 2),
-        "Alpha [%]": round(alpha_pct, 2),
-        "Beta": round(beta, 2),
-        "# Trades": n_trades,
-        "Win Rate [%]": round(win_rate_pct, 2),
-        "Best Trade [%]": round(best_trade_pct, 2) if best_trade_pct is not None else None,
-        "Worst Trade [%]": round(worst_trade_pct, 2) if worst_trade_pct is not None else None,
-        "Avg Trade [%]": round(avg_trade_pct, 2),
-        "Max Trade Duration": max_trade_duration,
-        "Avg Trade Duration": round(avg_trade_duration, 1),
-        "Profit Factor": round(profit_factor, 2),
-        "Expectancy [%]": round(expectancy_pct, 2),
-        "SQN": round(sqn, 2),
-        "Kelly Criterion": round(kelly_criterion, 4),
-        "Commissions [$]": round(total_commission, 2),
-        "Turnover Rate [%]": round(turnover_rate, 2),
-        "Day Win Rate [%]": round(day_win_rate, 2),
-        "Profit/Loss Ratio": round(profit_loss_ratio, 2),
-        "Avg Win [%]": round(avg_win_pct, 2),
-        "Avg Loss [%]": round(avg_loss_pct, 2),
-        "Equity Final [$]": round(equity_final, 2),
-        "Equity Peak [$]": round(equity_peak, 2),
+        "Exposure Time [%]": safe_round(exposure_time_pct, 2),
+        "Return [%]": safe_round(return_pct, 2),
+        "Return (Ann.) [%]": safe_round(return_ann_pct, 2),
+        "CAGR [%]": safe_round(cagr_pct, 2),
+        "Buy & Hold Return [%]": safe_round(buy_hold_return_pct, 2),
+        "Volatility (Ann.) [%]": safe_round(volatility_ann_pct, 2),
+        "Max Drawdown [%]": safe_round(max_drawdown_pct, 2),
+        "Avg Drawdown [%]": safe_round(avg_drawdown_pct, 2),
+        "Max Drawdown Duration": safe_round_int(max_dd_duration),
+        "Avg Drawdown Duration": safe_round(avg_dd_duration, 1),
+        "Sharpe Ratio": safe_round(sharpe_ratio, 2),
+        "Sortino Ratio": safe_round(sortino_ratio, 2),
+        "Calmar Ratio": safe_round(calmar_ratio, 2),
+        "Alpha [%]": safe_round(alpha_pct, 2),
+        "Beta": safe_round(beta, 2),
+        "# Trades": safe_round_int(n_trades),
+        "Win Rate [%]": safe_round(win_rate_pct, 2),
+        "Best Trade [%]": safe_round(best_trade_pct, 2) if best_trade_pct is not None else None,
+        "Worst Trade [%]": safe_round(worst_trade_pct, 2) if worst_trade_pct is not None else None,
+        "Avg Trade [%]": safe_round(avg_trade_pct, 2),
+        "Max Trade Duration": safe_round_int(max_trade_duration),
+        "Avg Trade Duration": safe_round(avg_trade_duration, 1),
+        "Profit Factor": safe_round(profit_factor, 2),
+        "Expectancy [%]": safe_round(expectancy_pct, 2),
+        "SQN": safe_round(sqn, 2),
+        "Kelly Criterion": safe_round(kelly_criterion, 4),
+        "Commissions [$]": safe_round(total_commission, 2),
+        "Turnover Rate [%]": safe_round(turnover_rate, 2),
+        "Day Win Rate [%]": safe_round(day_win_rate, 2),
+        "Profit/Loss Ratio": safe_round(profit_loss_ratio, 2),
+        "Avg Win [%]": safe_round(avg_win_pct, 2),
+        "Avg Loss [%]": safe_round(avg_loss_pct, 2),
+        "Equity Final [$]": safe_round(equity_final, 2),
+        "Equity Peak [$]": safe_round(equity_peak, 2),
     })

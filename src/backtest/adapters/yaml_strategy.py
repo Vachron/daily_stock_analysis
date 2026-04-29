@@ -164,7 +164,7 @@ def yaml_to_strategy_class(
                     sell_signal = True
 
         if buy_signal and not has_position:
-            self.buy(tag=f"yaml:{strategy_name}")
+            self.buy(size=0.25, tag=f"yaml:{strategy_name}")
         elif sell_signal and has_position:
             for trade in list(self.trades):
                 if not trade._is_closed:

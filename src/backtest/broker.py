@@ -30,6 +30,7 @@ class _Broker:
         hedging: bool = False,
         exclusive_orders: bool = False,
         t_plus_one: bool = True,
+        exit_rule: Any = None,
     ) -> None:
         self._cash: float = float(cash)
         self._initial_cash: float = float(cash)
@@ -43,6 +44,7 @@ class _Broker:
         self._hedging: bool = hedging
         self._exclusive_orders: bool = exclusive_orders
         self._t_plus_one: bool = t_plus_one
+        self._exit_rule = exit_rule
 
         self._orders: List[Order] = []
         self._trades: List[Trade] = []
@@ -60,8 +62,9 @@ class _Broker:
 
     @property
     def _equity(self) -> float:
-        high = self._data.High[-1] if len(self._data.High) > 0 else 0
-        close = self._data.Close[-1] if len(self._data.Close) > 0 else 0
+        idx = max(0, self._current_bar)
+        high = self._data.High[idx] if idx < len(self._data.High) else self._data.High[-1]
+        close = self._data.Close[idx] if idx < len(self._data.Close) else self._data.Close[-1]
         price = high if not self._trade_on_close else close
         return self._cash + self._position.pl(price)
 
@@ -184,6 +187,8 @@ class _Broker:
             actual_size = math.floor(self._cash / effective_price)
         elif order.size == float("-inf"):
             actual_size = -math.floor(self._cash / effective_price)
+        elif isinstance(order.size, float) and 0 < order.size < 1:
+            actual_size = math.floor(self._cash / effective_price * order.size)
 
         if actual_size == 0:
             return
@@ -205,6 +210,14 @@ class _Broker:
         trade._id = self._trade_id_counter
         trade._initial_sl = order.sl
         trade._initial_tp = order.tp
+
+        if self._exit_rule is not None:
+            sl_pct = getattr(self._exit_rule, 'stop_loss_pct', None)
+            if trade.sl is None and sl_pct is not None and sl_pct > 0:
+                trade.sl = effective_price * (1 - sl_pct / 100)
+            tp_pct = getattr(self._exit_rule, 'take_profit_pct', None)
+            if trade.tp is None and tp_pct is not None and tp_pct > 0:
+                trade.tp = effective_price * (1 + tp_pct / 100)
 
         cost = abs(actual_size) * effective_price
         commission = max(self._min_commission, cost * self._commission)

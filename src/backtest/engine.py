@@ -194,6 +194,7 @@ class Backtest:
             trade_on_close=self._trade_on_close,
             hedging=self._hedging,
             exclusive_orders=self._exclusive_orders,
+            exit_rule=self._exit_rule,
         )
 
         try:
