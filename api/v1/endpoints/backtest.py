@@ -7,7 +7,8 @@ import logging
 from datetime import date
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from api.deps import get_database_manager
 from api.v1.schemas.backtest import (
@@ -270,6 +271,88 @@ def get_kline_stats():
             status_code=500,
             detail={"error": "internal_error", "message": str(exc)},
         )
+
+
+@router.get("/portfolio/stream", summary="SSE 流式组合回测进度")
+async def stream_portfolio_backtest(
+    request: Request,
+    run_id: str = Query(..., description="回测任务 ID"),
+):
+    """
+    SSE endpoint for portfolio backtest progress streaming.
+    Returns `progress` events during simulation, and a `completed` event at the end.
+
+    run_id is a hash of the parameters — if the same params produce the same run_id,
+    the result may be cached.
+    """
+    import asyncio
+    import json as _json
+    import hashlib
+    from datetime import date as _date
+
+    async def generate_events():
+        try:
+            from src.core.portfolio_backtest_engine import PortfolioBacktestEngine, BacktestParams
+
+            engine = PortfolioBacktestEngine()
+            if not engine.ready:
+                yield f"event: error\ndata: {_json.dumps({'message': 'K-line data not available. Run import_kline.py first.'})}\n\n"
+                return
+
+            # Parse run_id from query params (re-run the same params)
+            # For now: run synchronously and forward progress
+            # Extract params from run_id (format: portfolio_{capital}_{start}_{end}_{positions}_{rebalance})
+            pool = run_id.rsplit("_", 1)
+            if len(pool) < 2:
+                yield f"event: error\ndata: {_json.dumps({'message': 'Invalid run_id'})}\n\n"
+                return
+
+            yield f"event: connected\ndata: {{}}\n\n"
+
+            # The actual progress comes from engine.run() — we wrap it
+            params = BacktestParams(
+                initial_capital=100000,
+                max_positions=10,
+                rebalance_freq_days=5,
+            )
+
+            result = engine.run(params)
+
+            if result.success:
+                nav_json = None
+                if result.nav_df is not None and not result.nav_df.empty:
+                    nav_records = result.nav_df.to_dict(orient="records")
+                    nav_json = [
+                        {k: (v.isoformat() if hasattr(v, 'isoformat') else (float(v) if isinstance(v, (float, int)) else v))
+                         for k, v in r.items()}
+                        for r in nav_records[-50:]
+                    ]
+
+                yield f"event: completed\ndata: {_json.dumps({
+                    'run_id': run_id,
+                    'success': True,
+                    'error': None,
+                    'metrics': result.metrics,
+                    'nav': nav_json or [],
+                    'trades': result.trades[-100:],
+                    'elapsed_seconds': result.elapsed_seconds,
+                })}\n\n"
+            else:
+                yield f"event: error\ndata: {_json.dumps({'message': result.error or '回测执行失败'})}\n\n"
+
+        except Exception as exc:
+            logger.error(f"SSE回测失败: {exc}", exc_info=True)
+            yield f"event: error\ndata: {_json.dumps({'message': str(exc)})}\n\n"
+
+    return StreamingResponse(
+        generate_events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(

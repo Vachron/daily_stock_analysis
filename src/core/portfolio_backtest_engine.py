@@ -18,9 +18,11 @@ Usage:
 
 from __future__ import annotations
 
+import json as _json_std
 import logging
 from dataclasses import dataclass, field
 from datetime import date, timedelta
+from pathlib import Path as _Path
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -100,7 +102,7 @@ class PortfolioBacktestEngine:
         except ImportError as e:
             return BacktestResult(success=False, error=f"Import error: {e}", params=params)
 
-        start = params.start_date or date.today() - timedelta(days=365)
+        start = params.start_date or date.today() - timedelta(days=90)
         end = params.end_date or date.today()
         strategy_names = params.strategy_names or self.DEFAULT_STRATEGY_NAMES
 
@@ -255,32 +257,53 @@ class PortfolioBacktestEngine:
             from pandas.tseries.offsets import BDay
             return [d.date() for d in pd.date_range(start, end, freq=BDay())]
 
-        try:
-            from data_provider.kline_repo import DAILY_DIR
-            from pathlib import Path
-
-            meta = self.kline_repo.get_meta()
-            if meta.empty:
-                return []
-
-            all_dates = set()
-            for pp in DAILY_DIR.glob("code_*.parquet"):
-                try:
-                    pf = pd.read_parquet(str(pp), columns=["date"])
-                    all_dates.update(pf["date"].unique())
-                except Exception:
-                    continue
-
-            origin = date(2000, 1, 1)
-            dates = sorted(
-                origin + timedelta(days=int(d))
-                for d in all_dates
-                if start <= origin + timedelta(days=int(d)) <= end
-            )
-            return dates
-        except Exception:
+        calendar = self._load_trading_calendar()
+        if calendar is None:
             from pandas.tseries.offsets import BDay
             return [d.date() for d in pd.date_range(start, end, freq=BDay())]
+
+        return sorted(d for d in calendar if start <= d <= end)
+
+    _trading_calendar_cache: Optional[List[date]] = None
+
+    @classmethod
+    def _load_trading_calendar(cls) -> Optional[List[date]]:
+        if cls._trading_calendar_cache is not None:
+            return cls._trading_calendar_cache
+
+        kline_dir = _Path(__file__).resolve().parent.parent.parent / "data" / "kline"
+        daily_dir = kline_dir / "daily"
+        cache_path = kline_dir / "trading_calendar.json"
+
+        if cache_path.exists():
+            try:
+                raw = _json_std.loads(cache_path.read_text(encoding="utf-8"))
+                cls._trading_calendar_cache = [date.fromisoformat(d) for d in raw]
+                return cls._trading_calendar_cache
+            except Exception:
+                pass
+
+        # Build calendar from ONE parquet file (not 5724)
+        try:
+            one_file = next(daily_dir.glob("code_*.parquet"), None)
+            if one_file is None:
+                return None
+            cols = pd.read_parquet(str(one_file), columns=["date"])
+            unique_dates = sorted(cols["date"].unique())
+            cls._trading_calendar_cache = [
+                date(2000, 1, 1) + timedelta(days=int(d))
+                for d in unique_dates if d > 0
+            ]
+            try:
+                cache_path.write_text(
+                    _json_std.dumps([d.isoformat() for d in cls._trading_calendar_cache]),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+            return cls._trading_calendar_cache
+        except Exception:
+            return None
 
     def get_statistics(self) -> Dict[str, Any]:
         return self.kline_repo.get_statistics()

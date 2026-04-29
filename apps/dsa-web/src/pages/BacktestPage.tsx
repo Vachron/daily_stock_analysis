@@ -14,7 +14,10 @@ import type { ParsedApiError } from '../api/error';
 import { getParsedApiError } from '../api/error';
 import apiClient from '../api/index';
 import { ApiErrorAlert, Card, Badge, EmptyState, Pagination, Tooltip } from '../components/common';
-import { TradeDetailTable } from '../components/backtest/TradeDetailTable';
+import { OverviewTab } from '../components/backtest/OverviewTab';
+import { PerformanceTab } from '../components/backtest/PerformanceTab';
+import { TradeTab } from '../components/backtest/TradeTab';
+import { RiskTab } from '../components/backtest/RiskTab';
 import type {
   BacktestResultItem, BacktestRunResponse, EquityCurveResponse, PerformanceMetrics,
 } from '../types/backtest';
@@ -304,7 +307,7 @@ const EquityCurveChart: React.FC<{ data: EquityCurveResponse | null; isLoading: 
                 formatter={((value: number) => [`${value.toFixed(2)}%`, '累计收益率']) as never}
               />
               <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
-              <Line type="monotone" dataKey="cumulativeReturn" stroke="#00d4ff" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="cumulativeReturn" stroke="hsl(var(--primary))" strokeWidth={2} dot={false} />
               <Legend formatter={() => '累计收益率'} wrapperStyle={{ fontSize: 11 }} />
             </ComposedChart>
           </ResponsiveContainer>
@@ -326,7 +329,7 @@ const EquityCurveChart: React.FC<{ data: EquityCurveResponse | null; isLoading: 
                 labelStyle={{ color: 'hsl(var(--foreground))' }}
                 formatter={((value: number) => [`${value.toFixed(2)}%`, '回撤']) as never}
               />
-              <Bar dataKey="drawdown" fill="#f87171" opacity={0.7} />
+              <Bar dataKey="drawdown" fill="hsl(var(--destructive))" opacity={0.7} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
@@ -340,7 +343,7 @@ const RunResultBanner: React.FC<{ data: BacktestRunResponse }> = ({ data }) => {
 
   if (isEmpty) {
     return (
-      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-warning/5 border border-warning/20 animate-fade-in">
+      <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-warning/10 border border-warning/30 animate-fade-in">
         <span className="text-xs font-medium text-warning">无候选记录</span>
         <span className="text-xs text-secondary-text">
           这些股票尚无历史分析记录，请先在「首页」中对这些股票执行一次分析后再试。
@@ -350,7 +353,7 @@ const RunResultBanner: React.FC<{ data: BacktestRunResponse }> = ({ data }) => {
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-success/5 border border-success/20 animate-fade-in">
+    <div className="flex flex-wrap items-center gap-3 px-4 py-2.5 rounded-xl bg-success/10 border border-success/30 animate-fade-in">
       <span className="text-xs font-medium text-success">回测完成</span>
       {(data.analyzed ?? 0) > 0 && <span className="text-xs text-secondary-text">自动分析 <span className="font-mono text-cyan">{data.analyzed}</span> 只</span>}
       <span className="text-xs text-secondary-text">候选 <span className="font-mono text-foreground">{data.processed}</span></span>
@@ -400,14 +403,14 @@ const BacktestPage: React.FC = () => {
   const [isLoadingCurve, setIsLoadingCurve] = useState(false);
 
   const [showAdvanced, setShowAdvanced] = useState(false);
-
-  const [backtestMode, setBacktestMode] = useState<'verify' | 'portfolio'>('verify');
+  const [resultTab, setResultTab] = useState<'overview' | 'performance' | 'trades' | 'risk'>('overview');
   const [initCapital, setInitCapital] = useState(100000);
   const [maxPositions, setMaxPositions] = useState(10);
   const [rebalanceDays, setRebalanceDays] = useState(5);
   const [factorJson, setFactorJson] = useState('');
   const [klineStats, setKlineStats] = useState<KlineStats | null>(null);
   const [isCheckingKline, setIsCheckingKline] = useState(false);
+  const effectiveMode: 'verify' | 'portfolio' = klineStats?.ready ? 'portfolio' : 'verify';
   const [pfRunResult, setPfRunResult] = useState<PortfolioResult | null>(null);
   const [pfRunError, setPfRunError] = useState<ParsedApiError | null>(null);
   const [isPfRunning, setIsPfRunning] = useState(false);
@@ -441,7 +444,7 @@ const BacktestPage: React.FC = () => {
       const response = await apiClient.post<Record<string, unknown>>(
         '/api/v1/backtest/portfolio',
         null,
-        { params },
+        { params, timeout: 120000 },
       );
       setPfRunResult(toPortfolioResult(response.data));
     } catch (err: unknown) {
@@ -583,26 +586,19 @@ const BacktestPage: React.FC = () => {
           <div className="flex items-center gap-3">
             <h1 className="text-sm font-semibold text-foreground">策略回测</h1>
             <StepIndicator current={wizardStep} completed={completedSteps} />
-            <div className="flex items-center rounded-lg bg-border/20 p-0.5 ml-2">
-              <button
-                type="button"
-                onClick={() => setBacktestMode('verify')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  backtestMode === 'verify' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
-                }`}
-              >
-                验证模式
-              </button>
-              <button
-                type="button"
-                onClick={() => setBacktestMode('portfolio')}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-medium transition-all ${
-                  backtestMode === 'portfolio' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
-                }`}
-              >
-                策略回测
-              </button>
-            </div>
+            {klineStats && klineStats.ready ? (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-success/10 border border-success/30 text-[10px]">
+                <div className="h-1.5 w-1.5 rounded-full bg-success" />
+                <span className="text-success font-medium">策略回测</span>
+                <span className="text-muted-text">{klineStats.stock_count}只股可用</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-cyan/10 border border-cyan/30 text-[10px]">
+                <div className="h-1.5 w-1.5 rounded-full bg-cyan" />
+                <span className="text-cyan font-medium">历史验证</span>
+                <span className="text-muted-text">基于分析记录</span>
+              </div>
+            )}
           </div>
           <button type="button" onClick={handleReset}
             className="btn-secondary flex items-center gap-1 text-xs">
@@ -610,7 +606,7 @@ const BacktestPage: React.FC = () => {
           </button>
         </div>
 
-        {backtestMode === 'portfolio' && (
+        {effectiveMode === 'portfolio' && (
           <div className="space-y-3 animate-fade-in">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="flex flex-col gap-1">
@@ -685,38 +681,32 @@ const BacktestPage: React.FC = () => {
             </div>
             {pfRunError && <ApiErrorAlert error={pfRunError} className="mt-2" />}
             {pfRunResult && !pfRunError && (
-              <>
-                <div className="rounded-xl bg-card/50 border border-border/30 p-3 grid grid-cols-4 sm:grid-cols-5 gap-2 text-center">
-                  <div><div className="text-[10px] text-muted-text">夏普</div><div className="text-xs font-mono text-foreground">{(pfRunResult.metrics.sharpe_ratio ?? 0).toFixed(2)}</div></div>
-                  <div><div className="text-[10px] text-muted-text">总收益</div><div className="text-xs font-mono text-foreground">{(pfRunResult.metrics.total_return_pct ?? 0).toFixed(1)}%</div></div>
-                  <div><div className="text-[10px] text-muted-text">最大回撤</div><div className="text-xs font-mono text-foreground">{(pfRunResult.metrics.max_drawdown_pct ?? 0).toFixed(1)}%</div></div>
-                  <div><div className="text-[10px] text-muted-text">超额收益</div><div className="text-xs font-mono text-foreground">{(pfRunResult.metrics.excess_return_pct ?? 0).toFixed(1)}%</div></div>
-                  <div><div className="text-[10px] text-muted-text">耗时</div><div className="text-xs font-mono text-foreground">{pfRunResult.elapsed_seconds}s</div></div>
+              <div className="space-y-2 animate-fade-in">
+                <div className="flex items-center rounded-lg bg-border/10 p-0.5 w-fit">
+                  {(['overview', 'performance', 'trades', 'risk'] as const).map(tab => (
+                    <button
+                      key={tab}
+                      onClick={() => setResultTab(tab)}
+                      className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
+                        resultTab === tab ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+                      }`}
+                    >
+                      {{ overview: '概览', performance: '绩效', trades: '交易', risk: '风险' }[tab]}
+                    </button>
+                  ))}
                 </div>
-                {pfRunResult.nav.length > 0 && (
-                  <Card variant="gradient" padding="sm">
-                    <div className="text-[10px] text-secondary-text mb-2">资金曲线</div>
-                    <ResponsiveContainer width="100%" height={160}>
-                      <ComposedChart data={pfRunResult.nav}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-                        <XAxis dataKey="date" hide />
-                        <YAxis hide domain={['auto', 'auto']} />
-                        <RechartsTooltip
-                          contentStyle={{ background: 'rgba(0,0,0,0.85)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, fontSize: 11 }}
-                          formatter={(v) => [`¥${Number(v ?? 0).toFixed(0)}`, 'NAV']}
-                        />
-                        <Line type="monotone" dataKey="nav" stroke="#22d3ee" strokeWidth={1.5} dot={false} />
-                      </ComposedChart>
-                    </ResponsiveContainer>
-                  </Card>
-                )}
-                {pfRunResult.trades.length > 0 && <TradeDetailTable trades={pfRunResult.trades} />}
-              </>
+                <div className="min-h-[120px]">
+                  {resultTab === 'overview' && <OverviewTab metrics={pfRunResult.metrics as unknown as Record<string, number>} nav={pfRunResult.nav} />}
+                  {resultTab === 'performance' && <PerformanceTab metrics={pfRunResult.metrics as unknown as Record<string, number>} />}
+                  {resultTab === 'trades' && <TradeTab trades={pfRunResult.trades} />}
+                  {resultTab === 'risk' && <RiskTab nav={pfRunResult.nav} metrics={pfRunResult.metrics as unknown as Record<string, number>} />}
+                </div>
+              </div>
             )}
           </div>
         )}
 
-        {backtestMode === 'verify' && wizardStep === 'config' && (
+        {effectiveMode === 'verify' && wizardStep === 'config' && (
           <div className="space-y-3 animate-fade-in">
             <div>
               <label className="text-xs text-muted-text mb-1 block">
