@@ -83,11 +83,12 @@ export function EquityCurveChart({ data, initialCash = 100000, isLoading, height
               fontSize: '11px',
               color: '#e2e8f0',
             }}
-            formatter={((value: unknown, name: string) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            formatter={((value: any, name: string) => {
               const v = Number(value);
               if (name === 'equity') return [`¥${v.toLocaleString()}`, '权益'];
               return [`${v}%`, '回撤'];
-            }) as any}
+            }) as never}
           />
           <ReferenceLine yAxisId="equity" y={initialCash} stroke="#64748b" strokeDasharray="4 4" strokeWidth={1} />
           <Area yAxisId="dd" type="monotone" dataKey="drawdown" stroke="#ef4444" strokeWidth={1} fill="url(#ddGrad)" name="回撤" />

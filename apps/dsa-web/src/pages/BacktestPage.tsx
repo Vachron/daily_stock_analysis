@@ -29,7 +29,12 @@ import { StrategyParamForm } from '../components/backtest/StrategyParamForm';
 import { PresetSelector } from '../components/backtest/PresetSelector';
 import { ExitRuleForm } from '../components/backtest/ExitRuleForm';
 import { EquityCurveChart as V2EquityCurveChart } from '../components/backtest/EquityCurveChart';
-import { useStrategyList, useStrategyBacktest } from '../hooks';
+import { useStrategyList, useStrategyBacktest, useBacktestOptimize, useMonteCarlo } from '../hooks';
+import { ExitReasonPieChart } from '../components/backtest/ExitReasonPieChart';
+import { OptimizeConfigForm } from '../components/backtest/OptimizeConfigForm';
+import { ParamHeatmap } from '../components/backtest/ParamHeatmap';
+import { MonteCarloResult } from '../components/backtest/MonteCarloResult';
+import { BacktestReportExport } from '../components/backtest/BacktestReportExport';
 
 interface KlineStats {
   ready: boolean;
@@ -427,7 +432,7 @@ const BacktestPage: React.FC = () => {
   const [streamProgress, setStreamProgress] = useState<BacktestProgress | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
 
-  const [backtestMode, setBacktestMode] = useState<'verify' | 'v2'>('verify');
+  const [backtestMode, setBacktestMode] = useState<'verify' | 'v2' | 'optimize' | 'montecarlo'>('verify');
 
   const { strategies } = useStrategyList();
   const [v2Strategy, setV2Strategy] = useState('');
@@ -438,6 +443,44 @@ const BacktestPage: React.FC = () => {
   const [v2Commission, setV2Commission] = useState(0.0003);
   const [v2Slippage, setV2Slippage] = useState(0.001);
   const { run: runV2, result: v2Result, loading: v2Loading, error: v2Error, reset: resetV2 } = useStrategyBacktest();
+
+  const { run: runOpt, result: optResult, loading: optLoading, error: optError, reset: resetOpt } = useBacktestOptimize();
+  const { run: runMC, result: mcResult, loading: mcLoading, error: mcError, reset: resetMC } = useMonteCarlo();
+  const [mcN, setMCN] = useState(1000);
+
+  const exportV2Report = async () => {
+      if (!v2Result) return;
+      try {
+        const resp = await fetch('/api/v1/backtest/strategy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            strategy: v2Strategy,
+            codes: selectedCodes,
+            cash: v2Cash,
+            commission: v2Commission,
+            slippage: v2Slippage,
+            start_date: dateFrom || undefined,
+            end_date: dateTo || undefined,
+            factors: v2Factors,
+            exit_rules: Object.keys(v2ExitRules).length > 0 ? {
+              trailing_stop_pct: v2ExitRules.trailingStopPct,
+              take_profit_pct: v2ExitRules.takeProfitPct,
+              stop_loss_pct: v2ExitRules.stopLossPct,
+              max_hold_days: v2ExitRules.maxHoldDays,
+            } : undefined,
+          }),
+        });
+        const data = await resp.json() as Record<string, unknown>;
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `backtest_${v2Result.strategyName}_${v2Result.symbol}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch { /* ignore */ }
+    };
 
   const selectedStrategy = strategies.find((s) => s.name === v2Strategy);
   useEffect(() => {
@@ -721,6 +764,24 @@ const BacktestPage: React.FC = () => {
             }`}
           >
             📊 策略回测 (v2)
+          </button>
+          <button
+            type="button"
+            onClick={() => { setBacktestMode('optimize' as never); setWizardStep('config'); setCompletedSteps([]); resetOpt(); }}
+            className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
+              backtestMode === 'optimize' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+            }`}
+          >
+            🔧 参数优化
+          </button>
+          <button
+            type="button"
+            onClick={() => { setBacktestMode('montecarlo' as never); setWizardStep('config'); setCompletedSteps([]); resetMC(); }}
+            className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
+              backtestMode === 'montecarlo' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+            }`}
+          >
+            🎲 蒙特卡洛
           </button>
         </div>
 
@@ -1192,6 +1253,201 @@ const BacktestPage: React.FC = () => {
         </main>
       )}
 
+      {backtestMode === 'optimize' && wizardStep === 'config' && (
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="space-y-4 animate-fade-in max-w-3xl">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-text mb-1 block">
+                  选择策略 {v2Strategy && <span className="text-cyan">✓</span>}
+                </label>
+                <StrategySelector value={v2Strategy} onChange={setV2Strategy} disabled={optLoading} />
+              </div>
+              {selectedStrategy && selectedStrategy.factors.length > 0 && (
+                <OptimizeConfigForm
+                  factors={selectedStrategy.factors}
+                  defaultRanges={Object.fromEntries(selectedStrategy.factors.map((f) => [f.id, f.range]))}
+                  onRun={(params) => {
+                    setWizardStep('running');
+                    setCompletedSteps((prev) => {
+                      const next = new Set(prev);
+                      next.add('config');
+                      return [...next] as WizardStep[];
+                    });
+                    runOpt({ ...params, strategy: v2Strategy, codes: selectedCodes });
+                    setWizardStep('results');
+                    setCompletedSteps((prev) => {
+                      const next = new Set(prev);
+                      next.add('running');
+                      return [...next] as WizardStep[];
+                    });
+                  }}
+                  loading={optLoading}
+                  disabled={!v2Strategy || selectedCodes.length === 0}
+                />
+              )}
+            </div>
+            {optError && (
+              <div className="px-4 py-2.5 rounded-xl bg-danger/10 border border-danger/30 text-xs text-danger">{optError}</div>
+            )}
+          </div>
+        </main>
+      )}
+
+      {backtestMode === 'optimize' && wizardStep === 'results' && optResult && (
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="space-y-4 animate-fade-in max-w-5xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">参数优化结果</h2>
+                <p className="text-[10px] text-muted-text">
+                  策略: {v2Strategy} | 共 {optResult.totalTrials} 次试验 | {optResult.elapsedSeconds?.toFixed(1)}s
+                </p>
+              </div>
+              <button type="button" onClick={() => { setWizardStep('config'); resetOpt(); }}
+                className="btn-secondary flex items-center gap-1 text-[10px]">
+                <RotateCcw className="h-3 w-3" />重新优化
+              </button>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { label: '最优值', value: optResult.bestValue.toFixed(3), sub: '' },
+                { label: '最优收益', value: `${(optResult.bestStats.returnPct ?? 0) >= 0 ? '+' : ''}${(optResult.bestStats.returnPct ?? 0).toFixed(2)}%`, sub: '' },
+                { label: '最优夏普', value: (optResult.bestStats.sharpeRatio ?? 0).toFixed(2), sub: '' },
+              ].map((m, i) => (
+                <div key={i} className="flex flex-col items-center gap-0.5 px-2 py-2 rounded-xl bg-card/50 border border-border/30">
+                  <span className="text-lg font-bold tabular-nums text-cyan">{m.value}</span>
+                  <span className="text-[9px] text-muted-text">{m.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl bg-card/30 border border-border/20 p-3">
+              <h3 className="text-[10px] font-medium text-cyan mb-2">最优参数</h3>
+              <div className="grid grid-cols-2 gap-2">
+                {Object.entries(optResult.bestParams).map(([k, v]) => (
+                  <div key={k} className="flex justify-between text-[10px]">
+                    <span className="text-muted-text">{k}</span>
+                    <span className="font-mono text-foreground">{typeof v === 'number' ? v.toFixed(2) : String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <ParamHeatmap heatmap={optResult.heatmap} />
+
+            <div className="rounded-xl bg-card/30 border border-border/20 p-3">
+              <h3 className="text-[10px] font-medium text-cyan mb-2">优化后策略回测详情</h3>
+              <div className="grid grid-cols-4 gap-3">
+                {[
+                  { title: '收益', rows: [['总收益', optResult.bestStats.returnPct, '%'], ['年化', optResult.bestStats.returnAnnPct, '%'], ['CAGR', optResult.bestStats.cagrPct, '%']] },
+                  { title: '风险', rows: [['最大回撤', optResult.bestStats.maxDrawdownPct, '%'], ['平均回撤', optResult.bestStats.avgDrawdownPct, '%'], ['波动率', optResult.bestStats.volatilityAnnPct, '%']] },
+                  { title: '交易', rows: [['次数', optResult.bestStats.tradeCount, ''], ['胜率', optResult.bestStats.winRatePct, '%'], ['盈亏比', optResult.bestStats.profitFactor, '']] },
+                  { title: '调整', rows: [['夏普', optResult.bestStats.sharpeRatio, ''], ['Sortino', optResult.bestStats.sortinoRatio, ''], ['Calmar', optResult.bestStats.calmarRatio, '']] },
+                ].map((group, gi) => (
+                  <div key={gi} className="rounded-xl bg-card/30 border border-border/20 p-3">
+                    <h3 className="text-[10px] font-medium text-cyan mb-2">{group.title}</h3>
+                    {group.rows.map((row: (string | number | undefined)[], ri: number) => {
+                      const label = String(row[0] ?? '');
+                      const value = row[1];
+                      const suffix = String(row[2] ?? '');
+                      return (
+                        <div key={ri} className="flex justify-between text-[10px] py-0.5">
+                          <span className="text-muted-text">{label}</span>
+                          <span className="font-mono tabular-nums text-foreground">{value != null ? `${Number(value).toFixed(2)}${suffix}` : '--'}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </main>
+      )}
+
+      {backtestMode === 'montecarlo' && wizardStep === 'config' && (
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="space-y-4 animate-fade-in max-w-3xl">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-text mb-1 block">选择策略</label>
+                <StrategySelector value={v2Strategy} onChange={setV2Strategy} disabled={mcLoading} />
+              </div>
+              <div className="space-y-3">
+                <div className="flex flex-col gap-1">
+                  <label className="text-[10px] text-muted-text">模拟次数</label>
+                  <div className="flex items-center gap-1">
+                    {[100, 500, 1000, 5000].map((n) => (
+                      <button key={n} type="button" onClick={() => setMCN(n)} disabled={mcLoading}
+                        className={`px-2 py-1 rounded text-[10px] ${mcN === n ? 'bg-cyan/10 text-cyan border border-cyan/20' : 'text-muted-text border border-border/30 hover:text-foreground'}`}>
+                        {n}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!v2Strategy || selectedCodes.length === 0) return;
+                    setWizardStep('running');
+                    setCompletedSteps((prev) => {
+                      const next = new Set(prev);
+                      next.add('config');
+                      return [...next] as WizardStep[];
+                    });
+                    await runMC({ strategy: v2Strategy, codes: selectedCodes, nSimulations: mcN, startDate: dateFrom || undefined, endDate: dateTo || undefined });
+                    setWizardStep('results');
+                    setCompletedSteps((prev) => {
+                      const next = new Set(prev);
+                      next.add('running');
+                      return [...next] as WizardStep[];
+                    });
+                  }}
+                  disabled={mcLoading || !v2Strategy || selectedCodes.length === 0}
+                  className="w-full py-2.5 rounded-lg bg-cyan/10 border border-cyan/20 text-cyan text-xs font-medium hover:bg-cyan/20 disabled:opacity-50 transition-colors"
+                >
+                  {mcLoading ? '蒙特卡洛模拟中...' : `开始蒙特卡洛模拟 (${mcN} 次)`}
+                </button>
+                <p className="text-[9px] text-muted-text">
+                  对策略进行随机数据鲁棒性测试。模拟次数越多结果越可靠，但耗时更长。
+                </p>
+              </div>
+            </div>
+            {mcError && (
+              <div className="px-4 py-2.5 rounded-xl bg-danger/10 border border-danger/30 text-xs text-danger">{mcError}</div>
+            )}
+          </div>
+        </main>
+      )}
+
+      {backtestMode === 'montecarlo' && wizardStep === 'results' && mcResult && (
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="space-y-4 animate-fade-in max-w-5xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">蒙特卡洛模拟</h2>
+                <p className="text-[10px] text-muted-text">策略: {v2Strategy} | {mcResult.nSimulations} 次模拟 | {mcResult.elapsedSeconds?.toFixed(1)}s</p>
+              </div>
+              <button type="button" onClick={() => { setWizardStep('config'); resetMC(); }}
+                className="btn-secondary flex items-center gap-1 text-[10px]">
+                <RotateCcw className="h-3 w-3" />重新模拟
+              </button>
+            </div>
+            <MonteCarloResult
+              originalStats={mcResult.originalStats}
+              medianReturn={mcResult.medianReturnPct}
+              p5Return={mcResult.p5ReturnPct}
+              p95Return={mcResult.p95ReturnPct}
+              ruinProbability={mcResult.ruinProbability}
+              results={mcResult.results}
+              nSimulations={mcResult.nSimulations}
+            />
+          </div>
+        </main>
+      )}
+
       {backtestMode === 'v2' && wizardStep === 'results' && v2Result && (
         <main className="flex-1 overflow-y-auto px-4 py-3">
           <div className="space-y-4 animate-fade-in max-w-5xl">
@@ -1201,6 +1457,7 @@ const BacktestPage: React.FC = () => {
                 <p className="text-[10px] text-muted-text">{v2Result.symbol} | {v2Result.startDate} ~ {v2Result.endDate} | 初始 ¥{v2Result.initialCash.toLocaleString()} | {v2Result.elapsedSeconds?.toFixed(2)}s</p>
               </div>
               <div className="flex items-center gap-2">
+                <BacktestReportExport onExport={exportV2Report} />
                 <button type="button" onClick={() => { setWizardStep('config'); resetV2(); }} className="btn-secondary flex items-center gap-1 text-[10px]">
                   <RotateCcw className="h-3 w-3" />重新配置
                 </button>
@@ -1277,6 +1534,8 @@ const BacktestPage: React.FC = () => {
                 </div>
               </div>
             )}
+
+            <ExitReasonPieChart trades={v2Result.trades || []} />
           </div>
         </main>
       )}

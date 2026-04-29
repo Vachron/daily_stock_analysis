@@ -13,6 +13,8 @@ import type {
   PresetInfo,
   OptimizeRequest,
   OptimizeResult,
+  MontecarloRequest,
+  MontecarloResult,
 } from '../types/backtest';
 
 export const backtestApi = {
@@ -211,5 +213,23 @@ export const backtestApi = {
       { timeout: 600000 },
     );
     return toCamelCase<OptimizeResult>(response.data);
+  },
+
+  runMontecarlo: async (params: MontecarloRequest): Promise<MontecarloResult> => {
+    const requestData: Record<string, unknown> = {
+      strategy: params.strategy,
+      codes: params.codes,
+    };
+    if (params.startDate) requestData.start_date = params.startDate;
+    if (params.endDate) requestData.end_date = params.endDate;
+    if (params.nSimulations) requestData.n_simulations = params.nSimulations;
+    if (params.frac) requestData.frac = params.frac;
+
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/montecarlo',
+      requestData,
+      { timeout: 600000 },
+    );
+    return toCamelCase<MontecarloResult>(response.data);
   },
 };

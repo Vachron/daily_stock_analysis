@@ -6,6 +6,8 @@ export { useSystemConfig } from './useSystemConfig';
 export { useStrategyList } from './useStrategyList';
 export { useBacktestPreset } from './useBacktestPreset';
 export { useStrategyBacktest } from './useStrategyBacktest';
+export { useBacktestOptimize } from './useBacktestOptimize';
+export { useMonteCarlo } from './useMonteCarlo';
 export type {
   SSEEventType,
   SSEEvent,

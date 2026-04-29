@@ -774,3 +774,106 @@ async def run_optimization(
             status_code=500,
             detail={"error": "internal_error", "message": f"参数优化失败: {str(exc)}"},
         )
+
+
+@router.post(
+    "/montecarlo",
+    summary="运行蒙特卡洛模拟",
+    description="使用随机生成的价格数据测试策略鲁棒性",
+)
+async def run_montecarlo(
+    request: "MontecarloRequest",
+):
+    try:
+        from src.backtest.adapters.yaml_strategy import yaml_to_strategy_class
+        from src.backtest.engine import Backtest
+        from src.backtest.lib import random_ohlc_data
+        from data_provider.kline_repo import KlineRepo, ORIGIN_DATE
+        import pandas as pd
+        from datetime import timedelta
+        import time as _time
+        import numpy as np
+
+        kline_repo = KlineRepo()
+        dfs = []
+        for code in (request.codes or []):
+            df = kline_repo.get_history(code)
+            if df is not None and not df.empty:
+                df = df.rename(columns={
+                    "open": "Open", "high": "High", "low": "Low",
+                    "close": "Close", "volume": "Volume",
+                })
+                if "date" in df.columns:
+                    df["Date"] = pd.to_datetime(df["date"].apply(
+                        lambda d: ORIGIN_DATE + timedelta(days=int(d))
+                    ))
+                    df = df.set_index("Date")
+                dfs.append(df)
+
+        if not dfs:
+            raise HTTPException(status_code=404, detail={"error": "data_not_found", "message": "未找到K线数据"})
+
+        data_df = dfs[0]
+        if request.start_date:
+            data_df = data_df[data_df.index >= request.start_date]
+        if request.end_date:
+            data_df = data_df[data_df.index <= request.end_date]
+
+        strategy_cls = yaml_to_strategy_class(request.strategy)
+
+        original_bt = Backtest(data_df, strategy_cls)
+        original_result = original_bt.run()
+
+        t0 = _time.time()
+        results = []
+        n = request.n_simulations
+
+        for seed in range(n):
+            try:
+                gen = random_ohlc_data(data_df, frac=request.frac, random_state=seed * 42)
+                sim_data = next(gen)
+                bt = Backtest(sim_data, strategy_cls, cash=100000)
+                r = bt.run()
+                results.append({
+                    "return_pct": float(r.stats.get("Return [%]", 0)),
+                    "sharpe_ratio": float(r.stats.get("Sharpe Ratio", 0)),
+                    "max_drawdown_pct": float(r.stats.get("Max Drawdown [%]", 0)),
+                    "trade_count": int(r.stats.get("# Trades", 0)),
+                })
+            except Exception:
+                continue
+
+        if not results:
+            raise HTTPException(status_code=500, detail={"error": "simulation_failed", "message": "所有模拟均失败"})
+
+        returns = [r["return_pct"] for r in results]
+        returns_sorted = sorted(returns)
+        median_return = float(np.median(returns))
+        p5 = returns_sorted[int(len(returns_sorted) * 0.05)]
+        p95 = returns_sorted[int(len(returns_sorted) * 0.95)]
+        ruin = sum(1 for r in returns if r < -50) / len(returns)
+
+        return {
+            "status": "completed",
+            "n_simulations": len(results),
+            "original_stats": {
+                "return_pct": float(original_result.stats.get("Return [%]", 0)),
+                "sharpe_ratio": float(original_result.stats.get("Sharpe Ratio", 0)),
+                "max_drawdown_pct": float(original_result.stats.get("Max Drawdown [%]", 0)),
+                "trade_count": int(original_result.stats.get("# Trades", 0)),
+            },
+            "median_return_pct": median_return,
+            "p5_return_pct": float(p5),
+            "p95_return_pct": float(p95),
+            "ruin_probability": ruin,
+            "results": results,
+            "elapsed_seconds": _time.time() - t0,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"蒙特卡洛模拟失败: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={"error": "internal_error", "message": f"蒙特卡洛模拟失败: {str(exc)}"},
+        )

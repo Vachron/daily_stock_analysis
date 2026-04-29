@@ -157,3 +157,31 @@ class OptimizeRequest(BaseModel):
     factor_ranges: Optional[Dict[str, List[float]]] = Field(None)
     constraint: Optional[str] = None
     max_tries: Optional[int] = None
+
+
+class MontecarloRequest(BaseModel):
+    strategy: str = Field(..., description="策略名")
+    codes: List[str] = Field(default_factory=list)
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    n_simulations: int = Field(1000, ge=1, le=10000, description="模拟次数")
+    frac: float = Field(1.0, ge=0.1, le=5.0, description="过采样比例")
+
+
+class MontecarloResultItem(BaseModel):
+    return_pct: float
+    sharpe_ratio: Optional[float] = None
+    max_drawdown_pct: Optional[float] = None
+    trade_count: int = 0
+
+
+class MontecarloResponse(BaseModel):
+    status: str
+    n_simulations: int
+    original_stats: Dict[str, float] = Field(default_factory=dict)
+    median_return_pct: float = 0
+    p5_return_pct: float = 0
+    p95_return_pct: float = 0
+    ruin_probability: float = 0
+    results: List[MontecarloResultItem] = Field(default_factory=list)
+    elapsed_seconds: float = 0

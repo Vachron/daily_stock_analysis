@@ -271,3 +271,33 @@ export interface OptimizeResult {
   totalTrials: number;
   elapsedSeconds: number;
 }
+
+// ============ v2 Monte Carlo ============
+
+export interface MontecarloRequest {
+  strategy: string;
+  codes: string[];
+  startDate?: string;
+  endDate?: string;
+  nSimulations?: number;
+  frac?: number;
+}
+
+export interface MontecarloResultItem {
+  returnPct: number;
+  sharpeRatio?: number;
+  maxDrawdownPct?: number;
+  tradeCount: number;
+}
+
+export interface MontecarloResult {
+  status: string;
+  nSimulations: number;
+  originalStats: Record<string, number>;
+  medianReturnPct: number;
+  p5ReturnPct: number;
+  p95ReturnPct: number;
+  ruinProbability: number;
+  results: MontecarloResultItem[];
+  elapsedSeconds: number;
+}
