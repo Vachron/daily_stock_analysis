@@ -23,7 +23,7 @@ export function ExitRuleForm({ value, onChange, disabled }: ExitRuleFormProps) {
           <div className="flex items-center gap-1.5">
             <Checkbox
               checked={value.trailingStopPct != null}
-              onChange={(c) => set('trailingStopPct', c ? 5 : undefined)}
+              onChange={(e) => set('trailingStopPct', e.target.checked ? 5 : undefined)}
               disabled={disabled}
             />
             <span className="text-[10px] text-muted-text">移动止损</span>
@@ -44,7 +44,7 @@ export function ExitRuleForm({ value, onChange, disabled }: ExitRuleFormProps) {
           <div className="flex items-center gap-1.5">
             <Checkbox
               checked={value.takeProfitPct != null}
-              onChange={(c) => set('takeProfitPct', c ? 10 : undefined)}
+              onChange={(e) => set('takeProfitPct', e.target.checked ? 10 : undefined)}
               disabled={disabled}
             />
             <span className="text-[10px] text-muted-text">目标止盈</span>
@@ -64,7 +64,7 @@ export function ExitRuleForm({ value, onChange, disabled }: ExitRuleFormProps) {
           <div className="flex items-center gap-1.5">
             <Checkbox
               checked={value.stopLossPct != null}
-              onChange={(c) => set('stopLossPct', c ? 3 : undefined)}
+              onChange={(e) => set('stopLossPct', e.target.checked ? 3 : undefined)}
               disabled={disabled}
             />
             <span className="text-[10px] text-muted-text">固定止损</span>
@@ -84,7 +84,7 @@ export function ExitRuleForm({ value, onChange, disabled }: ExitRuleFormProps) {
           <div className="flex items-center gap-1.5">
             <Checkbox
               checked={value.maxHoldDays != null}
-              onChange={(c) => set('maxHoldDays', c ? 10 : undefined)}
+              onChange={(e) => set('maxHoldDays', e.target.checked ? 10 : undefined)}
               disabled={disabled}
             />
             <span className="text-[10px] text-muted-text">最大持仓</span>
@@ -105,7 +105,7 @@ export function ExitRuleForm({ value, onChange, disabled }: ExitRuleFormProps) {
             <div className="flex items-center gap-1.5">
               <Checkbox
                 checked={value.partialExitEnabled ?? false}
-                onChange={(c) => set('partialExitEnabled', c)}
+                onChange={(e) => set('partialExitEnabled', e.target.checked)}
                 disabled={disabled}
               />
               <span className="text-[9px] text-muted-text">部分止盈</span>
