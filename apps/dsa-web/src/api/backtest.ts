@@ -7,6 +7,12 @@ import type {
   BacktestResultItem,
   EquityCurveResponse,
   PerformanceMetrics,
+  StrategyBacktestRequest,
+  StrategyBacktestResult,
+  StrategyInfo,
+  PresetInfo,
+  OptimizeRequest,
+  OptimizeResult,
 } from '../types/backtest';
 
 export const backtestApi = {
@@ -123,5 +129,87 @@ export const backtestApi = {
       { params: queryParams },
     );
     return toCamelCase<EquityCurveResponse>(response.data);
+  },
+
+  // ===== v2 Strategy Backtest =====
+
+  runStrategy: async (params: StrategyBacktestRequest): Promise<StrategyBacktestResult> => {
+    const requestData: Record<string, unknown> = {
+      strategy: params.strategy,
+      codes: params.codes,
+    };
+    if (params.cash != null) requestData.cash = params.cash;
+    if (params.commission != null) requestData.commission = params.commission;
+    if (params.slippage != null) requestData.slippage = params.slippage;
+    if (params.stampDuty != null) requestData.stamp_duty = params.stampDuty;
+    if (params.startDate) requestData.start_date = params.startDate;
+    if (params.endDate) requestData.end_date = params.endDate;
+    if (params.factors) requestData.factors = params.factors;
+    if (params.preset) requestData.preset = params.preset;
+    if (params.exitRules) {
+      requestData.exit_rules = {
+        trailing_stop_pct: params.exitRules?.trailingStopPct,
+        take_profit_pct: params.exitRules?.takeProfitPct,
+        stop_loss_pct: params.exitRules?.stopLossPct,
+        max_hold_days: params.exitRules?.maxHoldDays,
+        partial_exit_enabled: params.exitRules?.partialExitEnabled,
+        partial_exit_pct: params.exitRules?.partialExitPct,
+      };
+    }
+
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/strategy',
+      requestData,
+      { timeout: 120000 },
+    );
+    return toCamelCase<StrategyBacktestResult>(response.data);
+  },
+
+  getStrategies: async (): Promise<{ total: number; items: StrategyInfo[] }> => {
+    const response = await apiClient.get<{ total: number; items: Record<string, unknown>[] }>(
+      '/api/v1/backtest/strategies',
+    );
+    return {
+      total: response.data.total,
+      items: (response.data.items || []).map(item => toCamelCase<StrategyInfo>(item)),
+    };
+  },
+
+  getPresets: async (): Promise<{ total: number; items: PresetInfo[] }> => {
+    const response = await apiClient.get<{ total: number; items: Record<string, unknown>[] }>(
+      '/api/v1/backtest/presets',
+    );
+    return {
+      total: response.data.total,
+      items: (response.data.items || []).map(item => toCamelCase<PresetInfo>(item)),
+    };
+  },
+
+  getPresetForStock: async (stockCode: string): Promise<PresetInfo> => {
+    const response = await apiClient.get<Record<string, unknown>>(
+      `/api/v1/backtest/presets/${encodeURIComponent(stockCode)}`,
+    );
+    return toCamelCase<PresetInfo>(response.data);
+  },
+
+  runOptimize: async (params: OptimizeRequest): Promise<OptimizeResult> => {
+    const requestData: Record<string, unknown> = {
+      strategy: params.strategy,
+      codes: params.codes,
+      factor_ranges: params.factorRanges,
+    };
+    if (params.startDate) requestData.start_date = params.startDate;
+    if (params.endDate) requestData.end_date = params.endDate;
+    if (params.maximize) requestData.maximize = params.maximize;
+    if (params.method) requestData.method = params.method;
+    if (params.maxTries) requestData.max_tries = params.maxTries;
+    if (params.constraint) requestData.constraint = params.constraint;
+
+    const response = await apiClient.post<Record<string, unknown>>(
+      '/api/v1/backtest/optimize',
+      requestData,
+      { timeout: 600000 },
+    );
+    return toCamelCase<OptimizeResult>(response.data);
   },
 };

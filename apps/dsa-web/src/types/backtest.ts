@@ -122,3 +122,152 @@ export interface EquityCurveResponse {
   totalTrades: number;
   points: EquityCurvePoint[];
 }
+
+// ============ v2 Strategy Backtest ============
+
+export interface ExitRuleConfig {
+  trailingStopPct?: number;
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  maxHoldDays?: number;
+  partialExitEnabled?: boolean;
+  partialExitPct?: number;
+  signalThreshold?: number;
+  fixedDays?: number;
+}
+
+export interface StrategyBacktestRequest {
+  strategy: string;
+  codes: string[];
+  cash?: number;
+  commission?: number;
+  slippage?: number;
+  stampDuty?: number;
+  startDate?: string;
+  endDate?: string;
+  factors?: Record<string, number>;
+  preset?: string;
+  exitRules?: ExitRuleConfig;
+}
+
+export interface StrategyBacktestStats {
+  returnPct?: number;
+  returnAnnPct?: number;
+  cagrPct?: number;
+  buyHoldReturnPct?: number;
+  exposureTimePct?: number;
+  equityFinal?: number;
+  equityPeak?: number;
+  volatilityAnnPct?: number;
+  maxDrawdownPct?: number;
+  avgDrawdownPct?: number;
+  maxDrawdownDuration?: number;
+  avgDrawdownDuration?: number;
+  sharpeRatio?: number;
+  sortinoRatio?: number;
+  calmarRatio?: number;
+  alphaPct?: number;
+  beta?: number;
+  tradeCount?: number;
+  winRatePct?: number;
+  bestTradePct?: number;
+  worstTradePct?: number;
+  avgTradePct?: number;
+  profitFactor?: number;
+  expectancyPct?: number;
+  sqn?: number;
+  kellyCriterion?: number;
+  turnoverRate?: number;
+  dayWinRate?: number;
+  profitLossRatio?: number;
+  totalCommission?: number;
+  commissions?: number;
+}
+
+export interface StrategyBacktestTrade {
+  size: number;
+  entryBar: number;
+  exitBar?: number;
+  entryPrice: number;
+  exitPrice?: number;
+  sl?: number;
+  tp?: number;
+  pnl?: number;
+  returnPct?: number;
+  commission?: number;
+  entryTime?: string;
+  exitTime?: string;
+  duration?: string;
+  tag?: string;
+  exitReason?: string;
+  positionPct: number;
+}
+
+export interface StrategyBacktestResult {
+  resultId: string;
+  strategyName: string;
+  symbol: string;
+  startDate?: string;
+  endDate?: string;
+  initialCash: number;
+  stats: StrategyBacktestStats;
+  trades: StrategyBacktestTrade[];
+  equityCurve: Array<{ date?: string; Date?: string; Equity: number; DrawdownPct: number; DrawdownDuration?: number }>;
+  engineVersion: string;
+  presetName?: string;
+  elapsedSeconds: number;
+}
+
+export interface StrategyInfo {
+  name: string;
+  displayName: string;
+  description: string;
+  category: string;
+  factors: StrategyFactor[];
+  marketRegimes: string[];
+}
+
+export interface StrategyFactor {
+  id: string;
+  displayName: string;
+  type: string;
+  default: number;
+  range: number[];
+  step: number;
+}
+
+export interface PresetInfo {
+  name: string;
+  displayName: string;
+  activityLevel: string;
+  capSize: string;
+  threshold: number;
+  trailingStopPct?: number;
+  takeProfitPct?: number;
+  stopLossPct?: number;
+  maxHoldDays?: number;
+  positionSizing: string;
+  feeRate: number;
+}
+
+export interface OptimizeRequest {
+  strategy: string;
+  codes: string[];
+  startDate?: string;
+  endDate?: string;
+  maximize?: string;
+  method?: string;
+  factorRanges: Record<string, number[]>;
+  constraint?: string;
+  maxTries?: number;
+}
+
+export interface OptimizeResult {
+  status: string;
+  bestParams: Record<string, number>;
+  bestValue: number;
+  bestStats: StrategyBacktestStats;
+  heatmap?: Record<string, unknown>;
+  totalTrials: number;
+  elapsedSeconds: number;
+}

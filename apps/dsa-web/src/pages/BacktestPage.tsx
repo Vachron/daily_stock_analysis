@@ -22,7 +22,14 @@ import { useBacktestStream } from '../hooks/useBacktestStream';
 import type { BacktestProgress, BacktestCompleted } from '../hooks/useBacktestStream';
 import type {
   BacktestResultItem, BacktestRunResponse, EquityCurveResponse, PerformanceMetrics,
+  ExitRuleConfig,
 } from '../types/backtest';
+import { StrategySelector } from '../components/backtest/StrategySelector';
+import { StrategyParamForm } from '../components/backtest/StrategyParamForm';
+import { PresetSelector } from '../components/backtest/PresetSelector';
+import { ExitRuleForm } from '../components/backtest/ExitRuleForm';
+import { EquityCurveChart as V2EquityCurveChart } from '../components/backtest/EquityCurveChart';
+import { useStrategyList, useStrategyBacktest } from '../hooks';
 
 interface KlineStats {
   ready: boolean;
@@ -420,6 +427,53 @@ const BacktestPage: React.FC = () => {
   const [streamProgress, setStreamProgress] = useState<BacktestProgress | null>(null);
   const [streamError, setStreamError] = useState<string | null>(null);
 
+  const [backtestMode, setBacktestMode] = useState<'verify' | 'v2'>('verify');
+
+  const { strategies } = useStrategyList();
+  const [v2Strategy, setV2Strategy] = useState('');
+  const [v2Factors, setV2Factors] = useState<Record<string, number>>({});
+  const [v2Preset, setV2Preset] = useState<string | null>(null);
+  const [v2ExitRules, setV2ExitRules] = useState<ExitRuleConfig>({});
+  const [v2Cash, setV2Cash] = useState(100000);
+  const [v2Commission, setV2Commission] = useState(0.0003);
+  const [v2Slippage, setV2Slippage] = useState(0.001);
+  const { run: runV2, result: v2Result, loading: v2Loading, error: v2Error, reset: resetV2 } = useStrategyBacktest();
+
+  const selectedStrategy = strategies.find((s) => s.name === v2Strategy);
+  useEffect(() => {
+    if (selectedStrategy) {
+      const defaults: Record<string, number> = {};
+      for (const f of selectedStrategy.factors) {
+        defaults[f.id] = f.default;
+      }
+      setV2Factors(defaults);
+    }
+  }, [v2Strategy, selectedStrategy]);
+
+  const handleV2Run = async () => {
+    if (!v2Strategy || selectedCodes.length === 0) return;
+    setWizardStep('running');
+    setCompletedSteps((prev) => prev.includes('config') ? prev : [...prev, 'config']);
+    await runV2({
+      strategy: v2Strategy,
+      codes: selectedCodes,
+      cash: v2Cash,
+      commission: v2Commission,
+      slippage: v2Slippage,
+      startDate: dateFrom || undefined,
+      endDate: dateTo || undefined,
+      factors: v2Factors,
+      preset: v2Preset ?? undefined,
+      exitRules: Object.keys(v2ExitRules).length > 0 ? v2ExitRules : undefined,
+    });
+    setWizardStep('results');
+    setCompletedSteps((prev) => {
+      const next = new Set(prev);
+      next.add('running');
+      return [...next] as WizardStep[];
+    });
+  };
+
   const checkKlineStats = useCallback(async () => {
     setIsCheckingKline(true);
     try {
@@ -649,7 +703,28 @@ const BacktestPage: React.FC = () => {
           </button>
         </div>
 
-        {effectiveMode === 'portfolio' && (
+        <div className="flex items-center gap-0 mt-3 bg-border/10 rounded-lg p-0.5 w-fit">
+          <button
+            type="button"
+            onClick={() => { setBacktestMode('verify'); setWizardStep('config'); setCompletedSteps([]); }}
+            className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
+              backtestMode === 'verify' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+            }`}
+          >
+            📋 AI验证回测
+          </button>
+          <button
+            type="button"
+            onClick={() => { setBacktestMode('v2'); setWizardStep('config'); setCompletedSteps([]); resetV2(); }}
+            className={`px-3 py-1 rounded-md text-[10px] font-medium transition-all ${
+              backtestMode === 'v2' ? 'bg-cyan/20 text-cyan' : 'text-muted-text hover:text-secondary-text'
+            }`}
+          >
+            📊 策略回测 (v2)
+          </button>
+        </div>
+
+        {backtestMode === 'verify' && effectiveMode === 'portfolio' && (
           <div className="space-y-3 animate-fade-in">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <div className="flex flex-col gap-1">
@@ -851,7 +926,7 @@ const BacktestPage: React.FC = () => {
           </div>
         )}
 
-        {wizardStep === 'running' && isRunning && (
+        {backtestMode === 'verify' && wizardStep === 'running' && isRunning && (
           <div className="flex flex-col items-center gap-3 py-6 animate-fade-in">
             {!streamProgress && !streamError && (
               <div className="flex flex-col items-center gap-2">
@@ -914,7 +989,7 @@ const BacktestPage: React.FC = () => {
         {runError && <ApiErrorAlert error={runError} className="mt-2" />}
       </header>
 
-      {wizardStep === 'results' && (
+      {backtestMode === 'verify' && wizardStep === 'results' && (
         <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4 animate-fade-in">
           {pageError && <ApiErrorAlert error={pageError} className="mb-2" />}
 
@@ -1049,6 +1124,160 @@ const BacktestPage: React.FC = () => {
           )}
             </>
           )}
+        </main>
+      )}
+
+      {backtestMode === 'v2' && wizardStep === 'config' && (
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="space-y-3 animate-fade-in max-w-3xl">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs text-muted-text mb-1 block">
+                  选择策略 {v2Strategy && <span className="text-cyan">✓ 已选</span>}
+                </label>
+                <StrategySelector value={v2Strategy} onChange={setV2Strategy} disabled={v2Loading} />
+              </div>
+              <div className="space-y-3">
+                <PresetSelector value={v2Preset} onChange={setV2Preset} disabled={v2Loading} />
+                <ExitRuleForm value={v2ExitRules} onChange={setV2ExitRules} disabled={v2Loading} />
+              </div>
+            </div>
+
+            {selectedStrategy && selectedStrategy.factors.length > 0 && (
+              <StrategyParamForm factors={selectedStrategy.factors} values={v2Factors} onChange={(id, val) => setV2Factors((prev) => ({ ...prev, [id]: val }))} disabled={v2Loading} />
+            )}
+
+            <div className="grid grid-cols-3 gap-2">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-text">初始资金</label>
+                <input type="number" value={v2Cash} onChange={e => setV2Cash(Number(e.target.value))} min={10000} step={10000} className={`${INPUT_CLASS} tabular-nums text-center`} disabled={v2Loading} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-text">佣金率</label>
+                <input type="number" value={v2Commission} onChange={e => setV2Commission(Number(e.target.value))} min={0} max={0.01} step={0.0001} className={`${INPUT_CLASS} tabular-nums text-center`} disabled={v2Loading} />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] text-muted-text">滑点率</label>
+                <input type="number" value={v2Slippage} onChange={e => setV2Slippage(Number(e.target.value))} min={0} max={0.1} step={0.0001} className={`${INPUT_CLASS} tabular-nums text-center`} disabled={v2Loading} />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button type="button" onClick={handleV2Run} disabled={v2Loading || !v2Strategy || selectedCodes.length === 0}
+                className="btn-primary flex items-center gap-2 text-sm px-6 py-2.5 disabled:opacity-50">
+                {v2Loading ? (
+                  <><svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" /></svg>回测执行中...</>
+                ) : (<><Play className="h-4 w-4" />开始策略回测 (v2)</>)}
+              </button>
+              <span className="text-[10px] text-muted-text">
+                基于 {selectedStrategy?.displayName || '选择策略'}，{selectedCodes.length} 只股票，K线数据回测
+              </span>
+            </div>
+            {v2Error && (
+              <div className="px-4 py-2.5 rounded-xl bg-danger/10 border border-danger/30 text-xs text-danger">
+                {v2Error}
+              </div>
+            )}
+          </div>
+        </main>
+      )}
+
+      {backtestMode === 'v2' && wizardStep === 'running' && (
+        <main className="flex-1 overflow-y-auto flex items-center justify-center">
+          <div className="text-center space-y-3">
+            <div className="backtest-spinner lg" />
+            <p className="text-sm text-secondary-text">正在执行 {selectedStrategy?.displayName || v2Strategy} 策略回测...</p>
+            <p className="text-xs text-muted-text">这可能需要数秒，请耐心等待</p>
+          </div>
+        </main>
+      )}
+
+      {backtestMode === 'v2' && wizardStep === 'results' && v2Result && (
+        <main className="flex-1 overflow-y-auto px-4 py-3">
+          <div className="space-y-4 animate-fade-in max-w-5xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-foreground">{v2Result.strategyName}</h2>
+                <p className="text-[10px] text-muted-text">{v2Result.symbol} | {v2Result.startDate} ~ {v2Result.endDate} | 初始 ¥{v2Result.initialCash.toLocaleString()} | {v2Result.elapsedSeconds?.toFixed(2)}s</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button type="button" onClick={() => { setWizardStep('config'); resetV2(); }} className="btn-secondary flex items-center gap-1 text-[10px]">
+                  <RotateCcw className="h-3 w-3" />重新配置
+                </button>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                { label: '累计收益', value: `${(v2Result.stats.returnPct ?? 0) >= 0 ? '+' : ''}${(v2Result.stats.returnPct ?? 0).toFixed(2)}%`, tone: (v2Result.stats.returnPct ?? 0) >= 0 ? 'text-success' : 'text-danger' as const },
+                { label: '夏普比率', value: (v2Result.stats.sharpeRatio ?? 0).toFixed(2), tone: (v2Result.stats.sharpeRatio ?? 0) >= 1 ? 'text-success' : (v2Result.stats.sharpeRatio ?? 0) >= 0 ? 'text-warning' : 'text-danger' as const },
+                { label: '最大回撤', value: `${(v2Result.stats.maxDrawdownPct ?? 0).toFixed(2)}%`, tone: Math.abs(v2Result.stats.maxDrawdownPct ?? 0) <= 10 ? 'text-success' : Math.abs(v2Result.stats.maxDrawdownPct ?? 0) <= 20 ? 'text-warning' : 'text-danger' as const },
+                { label: '胜率', value: `${(v2Result.stats.winRatePct ?? 0).toFixed(1)}%`, tone: (v2Result.stats.winRatePct ?? 0) >= 50 ? 'text-success' : (v2Result.stats.winRatePct ?? 0) >= 30 ? 'text-warning' : 'text-danger' as const },
+              ].map((m, i) => (
+                <div key={i} className="flex flex-col items-center gap-0.5 px-3 py-2 rounded-xl bg-card/50 border border-border/30">
+                  <span className={`text-lg font-bold tabular-nums ${m.tone}`}>{m.value}</span>
+                  <span className="text-[10px] text-muted-text">{m.label}</span>
+                </div>
+              ))}
+            </div>
+
+            <V2EquityCurveChart data={v2Result.equityCurve} initialCash={v2Result.initialCash} height={280} />
+
+            <div className="grid grid-cols-4 gap-3">
+              {[
+                { title: '收益', rows: [['总收益率', v2Result.stats.returnPct, '%'], ['年化收益', v2Result.stats.returnAnnPct, '%'], ['CAGR', v2Result.stats.cagrPct, '%'], ['买入持有', v2Result.stats.buyHoldReturnPct, '%']] },
+                { title: '风险', rows: [['年化波动', v2Result.stats.volatilityAnnPct, '%'], ['最大回撤', v2Result.stats.maxDrawdownPct, '%'], ['平均回撤', v2Result.stats.avgDrawdownPct, '%']] },
+                { title: '交易', rows: [['交易次数', v2Result.stats.tradeCount, ''], ['胜率', v2Result.stats.winRatePct, '%'], ['盈亏比', v2Result.stats.profitFactor, ''], ['SQN', v2Result.stats.sqn, '']] },
+                { title: '风险调整', rows: [['夏普', v2Result.stats.sharpeRatio, ''], ['Sortino', v2Result.stats.sortinoRatio, ''], ['Calmar', v2Result.stats.calmarRatio, ''], ['Alpha', v2Result.stats.alphaPct, '%']] },
+              ].map((group, gi) => (
+                <div key={gi} className="rounded-xl bg-card/30 border border-border/20 p-3">
+                  <h3 className="text-[10px] font-medium text-cyan mb-2">{group.title}</h3>
+                  {group.rows.map((row: (string | number | undefined)[], ri: number) => {
+                    const label = String(row[0] ?? '');
+                    const value = row[1];
+                    const suffix = String(row[2] ?? '');
+                    return (
+                    <div key={ri} className="flex justify-between text-[10px] py-0.5">
+                      <span className="text-muted-text">{label}</span>
+                      <span className="font-mono tabular-nums text-foreground">{value != null ? `${Number(value).toFixed(2)}${suffix}` : '--'}</span>
+                    </div>
+                  )})}
+                </div>
+              ))}
+            </div>
+
+            {v2Result.trades && v2Result.trades.length > 0 && (
+              <div>
+                <h3 className="text-xs font-medium text-secondary-text mb-2">交易明细 ({v2Result.trades.length} 笔)</h3>
+                <div className="overflow-x-auto rounded-lg border border-border/20">
+                  <table className="w-full text-[10px]">
+                    <thead className="bg-border/10">
+                      <tr>
+                        <th className="text-left px-2 py-1.5 text-muted-text">入场</th>
+                        <th className="text-left px-2 py-1.5 text-muted-text">出场</th>
+                        <th className="text-right px-2 py-1.5 text-muted-text">入场价</th>
+                        <th className="text-right px-2 py-1.5 text-muted-text">出场价</th>
+                        <th className="text-right px-2 py-1.5 text-muted-text">收益</th>
+                        <th className="text-left px-2 py-1.5 text-muted-text">平仓原因</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {v2Result.trades.slice(0, 50).map((t, ti) => (
+                        <tr key={ti} className="border-t border-border/10 hover:bg-border/5">
+                          <td className="px-2 py-1 font-mono text-muted-text">{t.entryTime?.slice(0, 10) || t.entryBar}</td>
+                          <td className="px-2 py-1 font-mono text-muted-text">{t.exitTime?.slice(0, 10) || t.exitBar || '--'}</td>
+                          <td className={`px-2 py-1 font-mono text-right ${t.size > 0 ? 'text-success' : 'text-danger'}`}>{t.entryPrice?.toFixed(2)}</td>
+                          <td className="px-2 py-1 font-mono text-right">{t.exitPrice?.toFixed(2) || '--'}</td>
+                          <td className={`px-2 py-1 font-mono text-right ${(t.returnPct ?? 0) >= 0 ? 'text-success' : 'text-danger'}`}>{(t.returnPct ?? 0) >= 0 ? '+' : ''}{(t.returnPct ?? 0).toFixed(2)}%</td>
+                          <td className="px-2 py-1"><span className={`inline-block px-1.5 py-0.5 rounded text-[9px] ${t.exitReason === 'take_profit' ? 'bg-success/10 text-success' : t.exitReason === 'trailing_stop' ? 'bg-warning/10 text-warning' : t.exitReason === 'stop_loss' ? 'bg-danger/10 text-danger' : 'bg-muted/10 text-muted-text'}`}>{t.exitReason || '--'}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
         </main>
       )}
     </div>
